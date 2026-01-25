@@ -1,726 +1,935 @@
+// ============================================
+// 🛡️ BAKELITE DEFENCE BOT - ПРОМЫШЛЕННАЯ ВЕРСИЯ
+// Версия: 4.0.0
+// Контакт техподдержки: @kartochniy
+// ============================================
+
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 
-const CONFIG = {
+// ============================================
+// КОНФИГУРАЦИЯ СИСТЕМЫ
+// ============================================
+
+const SYSTEM_CONFIG = {
+    // Основные настройки
     BOT_TOKEN: process.env.BOT_TOKEN || '',
     ADMIN_CHAT_ID: process.env.ADMIN_CHAT_ID || '',
+    TECH_SUPPORT: '@kartochniy',
+    BOT_USERNAME: 'bakelite_defence_bot',
+    
+    // Серверные настройки
     PORT: process.env.PORT || 3000,
-    MAX_REQUESTS_PER_USER: 5,
-    REQUEST_TIMEOUT_MINUTES: 10,
-    LOG_FILE: 'bot_activity.log'
+    HOST: '0.0.0.0',
+    
+    // Лимиты и ограничения
+    MAX_REQUESTS_PER_HOUR: 10,
+    MAX_REPORTS_PER_DAY: 5,
+    SESSION_TIMEOUT_MINUTES: 15,
+    MIN_DESCRIPTION_LENGTH: 50,
+    MAX_DESCRIPTION_LENGTH: 2000,
+    
+    // Файлы и логи
+    LOG_FILE: 'system.log',
+    REPORTS_FILE: 'reports.json',
+    DEFENDERS_FILE: 'defenders.json',
+    BLACKLIST_FILE: 'blacklist.json',
+    
+    // Настройки безопасности
+    ENCRYPTION_KEY: process.env.ENCRYPTION_KEY || 'bakelite-default-key-2024',
+    REQUIRE_ADMIN_APPROVAL: true,
+    
+    // Системные сообщения
+    SYSTEM_NAME: 'Bakelite Defence System',
+    SYSTEM_VERSION: '4.0.0',
+    SUPPORT_CONTACT: 'Техподдержка: @kartochniy',
+    ADMIN_CONTACT: 'Администратор: @kartochniy'
 };
 
-console.log('='.repeat(60));
-console.log('ЗАПУСК СИСТЕМЫ BAKELITE DEFENCE');
-console.log('='.repeat(60));
+// ============================================
+// ВАЛИДАЦИЯ КОНФИГУРАЦИИ
+// ============================================
 
-const REQUIRED_ENV = ['BOT_TOKEN', 'ADMIN_CHAT_ID'];
-let configValid = true;
+console.log('='.repeat(70));
+console.log(`🚀 ${SYSTEM_CONFIG.SYSTEM_NAME} v${SYSTEM_CONFIG.SYSTEM_VERSION}`);
+console.log('='.repeat(70));
 
-REQUIRED_ENV.forEach(env => {
-    if (!process.env[env] || process.env[env].trim() === '') {
-        console.error(`ОШИБКА: Переменная ${env} не установлена`);
-        console.error(`Railway -> Variables -> Добавить ${env}`);
-        configValid = false;
+// Проверка обязательных переменных окружения
+const REQUIRED_ENV_VARS = [
+    { name: 'BOT_TOKEN', description: 'Токен бота от @BotFather' },
+    { name: 'ADMIN_CHAT_ID', description: 'Ваш Chat ID в Telegram' }
+];
+
+let validationFailed = false;
+
+REQUIRED_ENV_VARS.forEach(env => {
+    const value = process.env[env.name];
+    
+    if (!value || value.trim() === '') {
+        console.error(`❌ КРИТИЧЕСКАЯ ОШИБКА: ${env.name} не установлен`);
+        console.error(`   Описание: ${env.description}`);
+        console.error(`   Решение: Railway -> Variables -> Добавить ${env.name}`);
+        validationFailed = true;
+    } else if (env.name === 'BOT_TOKEN') {
+        SYSTEM_CONFIG.BOT_TOKEN = value;
+        console.log(`✅ ${env.name}: Установлен (${value.substring(0, 15)}...)`);
+    } else if (env.name === 'ADMIN_CHAT_ID') {
+        SYSTEM_CONFIG.ADMIN_CHAT_ID = value;
+        console.log(`✅ ${env.name}: ${value}`);
     }
 });
 
-if (!configValid) {
-    console.error('КРИТИЧЕСКАЯ ОШИБКА: Не все переменные установлены');
+if (validationFailed) {
+    console.error('\n🚫 СИСТЕМА НЕ МОЖЕТ БЫТЬ ЗАПУЩЕНА');
+    console.error('   Исправьте ошибки выше и перезапустите приложение');
     process.exit(1);
 }
 
-console.log('ПРОВЕРКА КОНФИГУРАЦИИ:');
-console.log(`- BOT_TOKEN: ${CONFIG.BOT_TOKEN.substring(0, 10)}...`);
-console.log(`- ADMIN_CHAT_ID: ${CONFIG.ADMIN_CHAT_ID}`);
-console.log(`- PORT: ${CONFIG.PORT}`);
-console.log('КОНФИГУРАЦИЯ ПРОЙДЕНА');
+console.log('\n📊 КОНФИГУРАЦИЯ ПРОВЕРЕНА:');
+console.log(`   • Токен бота: ${SYSTEM_CONFIG.BOT_TOKEN.substring(0, 10)}...`);
+console.log(`   • Админ ID: ${SYSTEM_CONFIG.ADMIN_CHAT_ID}`);
+console.log(`   • Техподдержка: ${SYSTEM_CONFIG.TECH_SUPPORT}`);
+console.log(`   • Порт: ${SYSTEM_CONFIG.PORT}`);
+console.log(`   • Макс. запросов/час: ${SYSTEM_CONFIG.MAX_REQUESTS_PER_HOUR}`);
 
-class Logger {
-    static log(level, message, data = null) {
-        const timestamp = new Date().toISOString();
-        const logEntry = `[${timestamp}] [${level}] ${message}`;
+// ============================================
+// СИСТЕМА ЛОГИРОВАНИЯ
+// ============================================
+
+class SystemLogger {
+    constructor() {
+        this.logLevels = {
+            DEBUG: 0,
+            INFO: 1,
+            WARN: 2,
+            ERROR: 3,
+            CRITICAL: 4
+        };
         
-        console.log(logEntry);
+        this.currentLevel = this.logLevels.INFO;
+    }
+    
+    formatMessage(level, message, data = null) {
+        const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+        const levelStr = level.padEnd(8);
+        const logId = crypto.randomBytes(3).toString('hex').toUpperCase();
         
-        if (data) {
-            console.log('Данные:', JSON.stringify(data, null, 2));
+        let formatted = `[${timestamp}] [${levelStr}] [${logId}] ${message}`;
+        
+        if (data && typeof data === 'object') {
+            try {
+                const dataStr = JSON.stringify(data, null, 2)
+                    .split('\n')
+                    .map(line => `[${timestamp}] [${levelStr}] [${logId}]   ${line}`)
+                    .join('\n');
+                formatted += `\n${dataStr}`;
+            } catch (e) {
+                formatted += `\n[${timestamp}] [${levelStr}] [${logId}]   (Невозможно сериализовать данные)`;
+            }
         }
         
+        return formatted;
+    }
+    
+    writeToConsole(level, message, data) {
+        const colors = {
+            INFO: '\x1b[36m',    // Cyan
+            WARN: '\x1b[33m',    // Yellow
+            ERROR: '\x1b[31m',   // Red
+            CRITICAL: '\x1b[41m\x1b[37m', // Red background, white text
+            DEBUG: '\x1b[90m',   // Gray
+            RESET: '\x1b[0m'
+        };
+        
+        const color = colors[level] || colors.RESET;
+        const formatted = this.formatMessage(level, message, data);
+        
+        console.log(`${color}${formatted}${colors.RESET}`);
+    }
+    
+    writeToFile(message) {
         try {
-            fs.appendFileSync(CONFIG.LOG_FILE, logEntry + '\n', 'utf8');
+            const logDir = path.dirname(SYSTEM_CONFIG.LOG_FILE);
+            if (!fs.existsSync(logDir) && logDir !== '') {
+                fs.mkdirSync(logDir, { recursive: true });
+            }
+            
+            fs.appendFileSync(SYSTEM_CONFIG.LOG_FILE, message + '\n', 'utf8');
         } catch (error) {
-            console.error('Ошибка записи в лог:', error.message);
+            console.error(`❌ Ошибка записи в лог-файл: ${error.message}`);
         }
     }
     
-    static info(message, data = null) {
+    log(level, message, data = null) {
+        if (this.logLevels[level] < this.currentLevel) return;
+        
+        const formatted = this.formatMessage(level, message, data);
+        
+        // Консоль
+        this.writeToConsole(level, message, data);
+        
+        // Файл
+        this.writeToFile(formatted);
+        
+        // Критические ошибки - дополнительное оповещение
+        if (level === 'CRITICAL') {
+            this.notifyAdmin(`КРИТИЧЕСКАЯ ОШИБКА: ${message}`);
+        }
+    }
+    
+    info(message, data = null) {
         this.log('INFO', message, data);
     }
     
-    static error(message, data = null) {
+    warn(message, data = null) {
+        this.log('WARN', message, data);
+    }
+    
+    error(message, data = null) {
         this.log('ERROR', message, data);
+    }
+    
+    debug(message, data = null) {
+        this.log('DEBUG', message, data);
+    }
+    
+    critical(message, data = null) {
+        this.log('CRITICAL', message, data);
+    }
+    
+    notifyAdmin(message) {
+        // В реальной системе здесь была бы отправка в Telegram
+        console.log(`📢 УВЕДОМЛЕНИЕ АДМИНУ: ${message}`);
     }
 }
 
-class UserStateManager {
+const logger = new SystemLogger();
+
+// ============================================
+// МЕНЕДЖЕР ДАННЫХ
+// ============================================
+
+class DataManager {
     constructor() {
-        this.userStates = new Map();
-        this.userRequests = new Map();
+        this.reports = new Map();
+        this.defenders = new Map();
+        this.blacklist = new Set();
+        this.userSessions = new Map();
+        this.statistics = {
+            totalReports: 0,
+            totalDefenders: 0,
+            activeSessions: 0,
+            blockedUsers: 0,
+            startTime: Date.now()
+        };
+        
+        this.loadPersistentData();
     }
     
-    setState(userId, state, data = {}) {
-        this.userStates.set(userId, {
-            state: state,
-            data: data,
-            timestamp: Date.now()
-        });
-        Logger.info(`Установлено состояние для ${userId}`, { state });
+    loadPersistentData() {
+        try {
+            // Загрузка отчетов
+            if (fs.existsSync(SYSTEM_CONFIG.REPORTS_FILE)) {
+                const data = JSON.parse(fs.readFileSync(SYSTEM_CONFIG.REPORTS_FILE, 'utf8'));
+                this.reports = new Map(data.reports || []);
+                this.statistics.totalReports = data.totalReports || 0;
+                logger.info('Данные отчетов загружены', { count: this.reports.size });
+            }
+            
+            // Загрузка защитников
+            if (fs.existsSync(SYSTEM_CONFIG.DEFENDERS_FILE)) {
+                const data = JSON.parse(fs.readFileSync(SYSTEM_CONFIG.DEFENDERS_FILE, 'utf8'));
+                this.defenders = new Map(data.defenders || []);
+                this.statistics.totalDefenders = data.totalDefenders || 0;
+                logger.info('Данные защитников загружены', { count: this.defenders.size });
+            }
+            
+            // Загрузка черного списка
+            if (fs.existsSync(SYSTEM_CONFIG.BLACKLIST_FILE)) {
+                const data = JSON.parse(fs.readFileSync(SYSTEM_CONFIG.BLACKLIST_FILE, 'utf8'));
+                this.blacklist = new Set(data.blacklist || []);
+                this.statistics.blockedUsers = data.blockedUsers || 0;
+                logger.info('Черный список загружен', { count: this.blacklist.size });
+            }
+            
+        } catch (error) {
+            logger.error('Ошибка загрузки данных', { error: error.message });
+        }
     }
     
-    getState(userId) {
-        return this.userStates.get(userId);
+    savePersistentData() {
+        try {
+            // Сохранение отчетов
+            const reportsData = {
+                reports: Array.from(this.reports.entries()),
+                totalReports: this.statistics.totalReports,
+                savedAt: new Date().toISOString()
+            };
+            fs.writeFileSync(SYSTEM_CONFIG.REPORTS_FILE, JSON.stringify(reportsData, null, 2), 'utf8');
+            
+            // Сохранение защитников
+            const defendersData = {
+                defenders: Array.from(this.defenders.entries()),
+                totalDefenders: this.statistics.totalDefenders,
+                savedAt: new Date().toISOString()
+            };
+            fs.writeFileSync(SYSTEM_CONFIG.DEFENDERS_FILE, JSON.stringify(defendersData, null, 2), 'utf8');
+            
+            // Сохранение черного списка
+            const blacklistData = {
+                blacklist: Array.from(this.blacklist),
+                blockedUsers: this.statistics.blockedUsers,
+                savedAt: new Date().toISOString()
+            };
+            fs.writeFileSync(SYSTEM_CONFIG.BLACKLIST_FILE, JSON.stringify(blacklistData, null, 2), 'utf8');
+            
+            logger.debug('Данные сохранены на диск');
+            
+        } catch (error) {
+            logger.error('Ошибка сохранения данных', { error: error.message });
+        }
     }
     
-    clearState(userId) {
-        this.userStates.delete(userId);
-        Logger.info(`Очищено состояние ${userId}`);
+    // Управление отчетами
+    createReport(data) {
+        const reportId = `RPT-${Date.now()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+        const report = {
+            id: reportId,
+            ...data,
+            createdAt: new Date().toISOString(),
+            status: 'new',
+            assignedTo: null,
+            priority: data.priority || 'medium',
+            updates: []
+        };
+        
+        this.reports.set(reportId, report);
+        this.statistics.totalReports++;
+        this.savePersistentData();
+        
+        logger.info('Создан новый отчет', { reportId, userId: data.userId });
+        return report;
     }
     
-    trackRequest(userId) {
+    getReport(reportId) {
+        return this.reports.get(reportId);
+    }
+    
+    updateReport(reportId, updates) {
+        const report = this.reports.get(reportId);
+        if (report) {
+            Object.assign(report, updates);
+            report.updatedAt = new Date().toISOString();
+            report.updates.push({
+                timestamp: new Date().toISOString(),
+                changes: updates
+            });
+            
+            this.reports.set(reportId, report);
+            this.savePersistentData();
+            
+            logger.info('Отчет обновлен', { reportId, updates });
+            return true;
+        }
+        return false;
+    }
+    
+    // Управление защитниками
+    createDefenderApplication(data) {
+        const appId = `DEF-${Date.now()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+        const application = {
+            id: appId,
+            ...data,
+            submittedAt: new Date().toISOString(),
+            status: 'pending',
+            reviewedBy: null,
+            reviewedAt: null,
+            notes: []
+        };
+        
+        this.defenders.set(appId, application);
+        this.statistics.totalDefenders++;
+        this.savePersistentData();
+        
+        logger.info('Создана заявка защитника', { appId, userId: data.userId });
+        return application;
+    }
+    
+    getDefenderApplication(appId) {
+        return this.defenders.get(appId);
+    }
+    
+    approveDefender(appId, adminId) {
+        const application = this.defenders.get(appId);
+        if (application) {
+            application.status = 'approved';
+            application.reviewedBy = adminId;
+            application.reviewedAt = new Date().toISOString();
+            application.notes.push({
+                timestamp: new Date().toISOString(),
+                note: `Заявка одобрена администратором ${adminId}`
+            });
+            
+            this.defenders.set(appId, application);
+            this.savePersistentData();
+            
+            logger.info('Заявка защитника одобрена', { appId, adminId });
+            return true;
+        }
+        return false;
+    }
+    
+    // Управление сессиями пользователей
+    createUserSession(userId, sessionType, initialData = {}) {
+        const sessionId = `SESS-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+        const session = {
+            id: sessionId,
+            userId: userId,
+            type: sessionType,
+            data: initialData,
+            state: 'initial',
+            step: 0,
+            createdAt: Date.now(),
+            lastActivity: Date.now(),
+            completed: false
+        };
+        
+        this.userSessions.set(sessionId, session);
+        this.statistics.activeSessions++;
+        
+        logger.debug('Создана новая сессия', { sessionId, userId, type: sessionType });
+        return sessionId;
+    }
+    
+    getSession(sessionId) {
+        return this.userSessions.get(sessionId);
+    }
+    
+    updateSession(sessionId, updates) {
+        const session = this.userSessions.get(sessionId);
+        if (session) {
+            Object.assign(session, updates);
+            session.lastActivity = Date.now();
+            this.userSessions.set(sessionId, session);
+            return true;
+        }
+        return false;
+    }
+    
+    completeSession(sessionId) {
+        const session = this.userSessions.get(sessionId);
+        if (session) {
+            session.completed = true;
+            session.completedAt = Date.now();
+            this.userSessions.set(sessionId, session);
+            this.statistics.activeSessions--;
+            return true;
+        }
+        return false;
+    }
+    
+    // Управление черным списком
+    addToBlacklist(userId, reason, adminId = 'system') {
+        this.blacklist.add(userId.toString());
+        this.statistics.blockedUsers++;
+        
+        const entry = {
+            userId: userId,
+            reason: reason,
+            bannedBy: adminId,
+            bannedAt: new Date().toISOString(),
+            expiresAt: null // null = навсегда
+        };
+        
+        this.savePersistentData();
+        logger.warn('Пользователь добавлен в черный список', entry);
+        return entry;
+    }
+    
+    isUserBlocked(userId) {
+        return this.blacklist.has(userId.toString());
+    }
+    
+    // Очистка старых сессий
+    cleanupOldSessions() {
         const now = Date.now();
-        const userRequests = this.userRequests.get(userId) || [];
+        const timeout = SYSTEM_CONFIG.SESSION_TIMEOUT_MINUTES * 60 * 1000;
+        let cleanedCount = 0;
         
-        const recentRequests = userRequests.filter(time => now - time < 3600000);
+        for (const [sessionId, session] of this.userSessions.entries()) {
+            if (now - session.lastActivity > timeout && !session.completed) {
+                this.userSessions.delete(sessionId);
+                cleanedCount++;
+            }
+        }
         
-        if (recentRequests.length >= CONFIG.MAX_REQUESTS_PER_USER) {
-            Logger.info(`Лимит запросов для ${userId}`);
+        if (cleanedCount > 0) {
+            this.statistics.activeSessions -= cleanedCount;
+            logger.info('Очищены устаревшие сессии', { count: cleanedCount });
+        }
+        
+        return cleanedCount;
+    }
+    
+    // Статистика
+    getStatistics() {
+        return {
+            ...this.statistics,
+            uptime: Math.floor((Date.now() - this.statistics.startTime) / 1000),
+            reportsByStatus: this.getReportsByStatus(),
+            defendersByStatus: this.getDefendersByStatus(),
+            activeUsers: this.userSessions.size
+        };
+    }
+    
+    getReportsByStatus() {
+        const counts = { new: 0, in_progress: 0, resolved: 0, closed: 0 };
+        for (const report of this.reports.values()) {
+            counts[report.status] = (counts[report.status] || 0) + 1;
+        }
+        return counts;
+    }
+    
+    getDefendersByStatus() {
+        const counts = { pending: 0, approved: 0, rejected: 0 };
+        for (const defender of this.defenders.values()) {
+            counts[defender.status] = (counts[defender.status] || 0) + 1;
+        }
+        return counts;
+    }
+}
+
+// ============================================
+// СИСТЕМА ОГРАНИЧЕНИЙ И БЕЗОПАСНОСТИ
+// ============================================
+
+class SecurityManager {
+    constructor(dataManager) {
+        this.dataManager = dataManager;
+        this.requestLog = new Map(); // userId -> timestamp[]
+        this.spamAttempts = new Map(); // userId -> count
+    }
+    
+    canMakeRequest(userId) {
+        const now = Date.now();
+        const hourAgo = now - 3600000;
+        
+        // Проверка черного списка
+        if (this.dataManager.isUserBlocked(userId)) {
+            logger.warn('Запрос от заблокированного пользователя', { userId });
             return false;
         }
         
+        // Проверка лимита запросов
+        const userRequests = this.requestLog.get(userId) || [];
+        const recentRequests = userRequests.filter(time => time > hourAgo);
+        
+        if (recentRequests.length >= SYSTEM_CONFIG.MAX_REQUESTS_PER_HOUR) {
+            this.handleSpamAttempt(userId);
+            return false;
+        }
+        
+        // Логируем запрос
         recentRequests.push(now);
-        this.userRequests.set(userId, recentRequests);
+        this.requestLog.set(userId, recentRequests);
+        
         return true;
+    }
+    
+    handleSpamAttempt(userId) {
+        let attempts = this.spamAttempts.get(userId) || 0;
+        attempts++;
+        this.spamAttempts.set(userId, attempts);
+        
+        logger.warn('Попытка спама', { userId, attempts });
+        
+        // После 5 попыток - временная блокировка
+        if (attempts >= 5) {
+            this.dataManager.addToBlacklist(
+                userId, 
+                'Многократное превышение лимита запросов',
+                'security_system'
+            );
+            
+            logger.warn('Пользователь временно заблокирован за спам', { userId });
+        }
+    }
+    
+    resetUserLimits(userId) {
+        this.requestLog.delete(userId);
+        this.spamAttempts.delete(userId);
+    }
+    
+    validateInput(text, type) {
+        if (!text || typeof text !== 'string') {
+            return { valid: false, error: 'Пустой ввод' };
+        }
+        
+        const trimmed = text.trim();
+        
+        switch (type) {
+            case 'name':
+                if (trimmed.length < 2 || trimmed.length > 50) {
+                    return { valid: false, error: 'Имя должно быть от 2 до 50 символов' };
+                }
+                if (!/^[a-zA-Zа-яА-ЯёЁ\s\-]+$/u.test(trimmed)) {
+                    return { valid: false, error: 'Имя содержит недопустимые символы' };
+                }
+                break;
+                
+            case 'country':
+                if (trimmed.length < 2 || trimmed.length > 50) {
+                    return { valid: false, error: 'Название страны должно быть от 2 до 50 символов' };
+                }
+                break;
+                
+            case 'description':
+                if (trimmed.length < SYSTEM_CONFIG.MIN_DESCRIPTION_LENGTH) {
+                    return { 
+                        valid: false, 
+                        error: `Описание должно быть не менее ${SYSTEM_CONFIG.MIN_DESCRIPTION_LENGTH} символов` 
+                    };
+                }
+                if (trimmed.length > SYSTEM_CONFIG.MAX_DESCRIPTION_LENGTH) {
+                    return { 
+                        valid: false, 
+                        error: `Описание должно быть не более ${SYSTEM_CONFIG.MAX_DESCRIPTION_LENGTH} символов` 
+                    };
+                }
+                break;
+                
+            case 'skills':
+                if (trimmed.length < 5 || trimmed.length > 500) {
+                    return { valid: false, error: 'Описание навыков должно быть от 5 до 500 символов' };
+                }
+                break;
+        }
+        
+        return { valid: true, value: trimmed };
+    }
+    
+    sanitizeText(text) {
+        return text
+            .replace(/[<>]/g, '') // Удаляем HTML теги
+            .replace(/\n{3,}/g, '\n\n') // Ограничиваем пустые строки
+            .substring(0, SYSTEM_CONFIG.MAX_DESCRIPTION_LENGTH);
     }
 }
 
-class BakeliteBot {
+// ============================================
+// ОСНОВНОЙ КЛАСС БОТА
+// ============================================
+
+class BakeliteDefenceBot {
     constructor() {
-        this.stateManager = new UserStateManager();
+        this.dataManager = new DataManager();
+        this.securityManager = new SecurityManager(this.dataManager);
         this.bot = null;
         this.app = express();
-        this.setupBot();
+        
         this.setupWebServer();
+        this.setupBot();
+        this.setupCleanupIntervals();
+        
+        logger.info('Система инициализирована');
+    }
+    
+    setupWebServer() {
+        this.app.use(express.json());
+        this.app.use(express.urlencoded({ extended: true }));
+        
+        // Основная страница
+        this.app.get('/', (req, res) => {
+            const stats = this.dataManager.getStatistics();
+            res.json({
+                system: SYSTEM_CONFIG.SYSTEM_NAME,
+                version: SYSTEM_CONFIG.SYSTEM_VERSION,
+                status: 'operational',
+                timestamp: new Date().toISOString(),
+                uptime: stats.uptime,
+                support: SYSTEM_CONFIG.SUPPORT_CONTACT,
+                endpoints: ['/health', '/stats', '/api/v1/status']
+            });
+        });
+        
+        // Проверка здоровья системы
+        this.app.get('/health', (req, res) => {
+            const health = {
+                status: 'healthy',
+                bot: !!this.bot,
+                database: this.dataManager.reports.size >= 0,
+                memory: process.memoryUsage(),
+                timestamp: new Date().toISOString()
+            };
+            
+            res.json(health);
+        });
+        
+        // Статистика
+        this.app.get('/stats', (req, res) => {
+            const stats = this.dataManager.getStatistics();
+            res.json(stats);
+        });
+        
+        // API статуса
+        this.app.get('/api/v1/status', (req, res) => {
+            res.json({
+                online: true,
+                version: SYSTEM_CONFIG.SYSTEM_VERSION,
+                users: this.dataManager.statistics.activeSessions,
+                reports: this.dataManager.statistics.totalReports,
+                defenders: this.dataManager.statistics.totalDefenders
+            });
+        });
+        
+        // 404 обработчик
+        this.app.use((req, res) => {
+            res.status(404).json({
+                error: 'Endpoint not found',
+                available: ['/', '/health', '/stats', '/api/v1/status']
+            });
+        });
     }
     
     setupBot() {
         try {
-            Logger.info('Инициализация бота');
+            logger.info('Инициализация Telegram бота...');
             
-            this.bot = new TelegramBot(CONFIG.BOT_TOKEN, {
+            this.bot = new TelegramBot(SYSTEM_CONFIG.BOT_TOKEN, {
                 polling: {
-                    interval: 1000,
-                    autoStart: true
+                    interval: 300,
+                    autoStart: true,
+                    params: {
+                        timeout: 10,
+                        limit: 100
+                    }
+                },
+                request: {
+                    timeout: 30000,
+                    agent: null
                 }
             });
             
             this.setupErrorHandlers();
             this.setupCommandHandlers();
+            this.setupMessageHandlers();
+            this.setupCallbackQueryHandlers();
             
-            Logger.info('Бот инициализирован');
+            logger.info('Telegram бот успешно инициализирован');
+            
         } catch (error) {
-            Logger.error('Ошибка инициализации', error);
+            logger.critical('Ошибка инициализации бота', { error: error.message });
             throw error;
         }
     }
     
     setupErrorHandlers() {
         this.bot.on('polling_error', (error) => {
-            Logger.error('Ошибка polling', {
+            logger.error('Ошибка polling Telegram API', {
                 code: error.code,
-                message: error.message
+                message: error.message,
+                stack: error.stack
             });
+        });
+        
+        this.bot.on('webhook_error', (error) => {
+            logger.error('Ошибка webhook', error);
+        });
+        
+        this.bot.on('error', (error) => {
+            logger.error('Общая ошибка бота', error);
         });
     }
     
     setupCommandHandlers() {
-        // КОМАНДА /start
-        this.bot.onText(/^\/start(?:\s|$)/, (msg) => {
+        // ========== ОСНОВНЫЕ КОМАНДЫ ==========
+        
+        // /start - Начало работы
+        this.bot.onText(/^\/start(?:\s|$)/i, (msg) => {
             this.handleStartCommand(msg);
         });
         
-        // КОМАНДА /help
-        this.bot.onText(/^\/help(?:\s|$)/, (msg) => {
+        // /help - Помощь
+        this.bot.onText(/^\/help(?:\s|$)/i, (msg) => {
             this.handleHelpCommand(msg);
         });
         
-        // КОМАНДА /report
-        this.bot.onText(/^\/report(?:\s|$)/, (msg) => {
+        // /report - Подать заявку
+        this.bot.onText(/^\/report(?:\s|$)/i, (msg) => {
             this.handleReportCommand(msg);
         });
         
-        // КОМАНДА /join - ДОБАВЛЕНА
-        this.bot.onText(/^\/join(?:\s|$)/, (msg) => {
+        // /join - Стать защитником
+        this.bot.onText(/^\/join(?:\s|$)/i, (msg) => {
             this.handleJoinCommand(msg);
         });
         
-        // КОМАНДА /status
-        this.bot.onText(/^\/status(?:\s|$)/, (msg) => {
+        // /status - Статус системы
+        this.bot.onText(/^\/status(?:\s|$)/i, (msg) => {
             this.handleStatusCommand(msg);
         });
         
-        // КОМАНДА /cancel
-        this.bot.onText(/^\/cancel(?:\s|$)/, (msg) => {
+        // /cancel - Отмена операции
+        this.bot.onText(/^\/cancel(?:\s|$)/i, (msg) => {
             this.handleCancelCommand(msg);
         });
         
-        // Обработка сообщений
+        // /support - Техподдержка
+        this.bot.onText(/^\/support(?:\s|$)/i, (msg) => {
+            this.handleSupportCommand(msg);
+        });
+        
+        // /about - О системе
+        this.bot.onText(/^\/about(?:\s|$)/i, (msg) => {
+            this.handleAboutCommand(msg);
+        });
+        
+        // /stats - Статистика (только для админа)
+        this.bot.onText(/^\/stats(?:\s|$)/i, (msg) => {
+            this.handleStatsCommand(msg);
+        });
+    }
+    
+    setupMessageHandlers() {
         this.bot.on('message', (msg) => {
-            this.handleMessage(msg);
+            // Игнорируем команды
+            if (msg.text && msg.text.startsWith('/')) {
+                return;
+            }
+            
+            this.handleUserMessage(msg);
         });
     }
     
-    setupWebServer() {
-        this.app.use(express.json());
-        
-        this.app.get('/', (req, res) => {
-            res.json({
-                service: 'Bakelite Defence Bot',
-                status: 'operational',
-                timestamp: new Date().toISOString(),
-                version: '3.1.0',
-                commands: ['/start', '/help', '/report', '/join', '/status', '/cancel']
-            });
-        });
-        
-        this.app.get('/health', (req, res) => {
-            res.json({
-                status: 'healthy',
-                bot_online: !!this.bot,
-                active_users: this.stateManager.userStates.size
-            });
+    setupCallbackQueryHandlers() {
+        this.bot.on('callback_query', (callbackQuery) => {
+            const chatId = callbackQuery.message.chat.id;
+            const userId = callbackQuery.from.id;
+            const data = callbackQuery.data;
+            
+            logger.debug('Callback query получен', { userId, data });
+            
+            // Подтверждение получения callback
+            this.bot.answerCallbackQuery(callbackQuery.id);
+            
+            // Обработка callback данных
+            if (data.startsWith('confirm_')) {
+                this.handleConfirmationCallback(callbackQuery);
+            } else if (data.startsWith('action_')) {
+                this.handleActionCallback(callbackQuery);
+            }
         });
     }
     
-    // ====================
+    setupCleanupIntervals() {
+        // Очистка устаревших сессий каждые 5 минут
+        setInterval(() => {
+            const cleaned = this.dataManager.cleanupOldSessions();
+            if (cleaned > 0) {
+                logger.debug(`Автоочистка: ${cleaned} сессий`);
+            }
+        }, 5 * 60 * 1000);
+        
+        // Автосохранение данных каждые 10 минут
+        setInterval(() => {
+            this.dataManager.savePersistentData();
+            logger.debug('Автосохранение данных выполнено');
+        }, 10 * 60 * 1000);
+        
+        logger.info('Фоновые задачи инициализированы');
+    }
+    
+    // ============================================
     // ОБРАБОТЧИКИ КОМАНД
-    // ====================
+    // ============================================
     
     async handleStartCommand(msg) {
         const chatId = msg.chat.id;
         const userId = msg.from.id;
         const userName = msg.from.first_name || 'Пользователь';
         
-        Logger.info(`/start от ${userName} (${userId})`);
+        logger.info(`Команда /start от ${userName} (${userId})`);
         
-        if (!this.stateManager.trackRequest(userId)) {
-            this.sendMessage(chatId, 
-                'Превышен лимит запросов. Подождите 1 час.'
+        // Проверка безопасности
+        if (!this.securityManager.canMakeRequest(userId)) {
+            await this.sendMessage(chatId,
+                `🚫 Доступ временно ограничен.\n\n` +
+                `Вы превысили лимит запросов. Пожалуйста, подождите 1 час.\n\n` +
+                `Если это ошибка, обратитесь в техподдержку: ${SYSTEM_CONFIG.TECH_SUPPORT}`
             );
             return;
         }
         
         const welcomeMessage = 
-            `Добро пожаловать в Bakelite Defence, ${userName}.\n\n` +
-            `Я - система помощи жертвам киберпреступлений.\n\n` +
-            `Доступные команды:\n` +
+            `🛡️ *Добро пожаловать в ${SYSTEM_CONFIG.SYSTEM_NAME}!*\n\n` +
+            `Привет, ${userName}! Я — автоматизированная система помощи жертвам киберпреступлений.\n\n` +
+            `*🌟 ВАЖНАЯ ИНФОРМАЦИЯ:*\n` +
+            `• Система работает 24/7\n` +
+            `• Среднее время ответа: 12-24 часа\n` +
+            `• Все данные защищены шифрованием\n` +
+            `• Конфиденциальность гарантирована\n\n` +
+            `*📋 ОСНОВНЫЕ КОМАНДЫ:*\n` +
             `/report - Подать заявку о проблеме\n` +
-            `/join - Стать защитником\n` +
-            `/help - Получить инструкцию\n` +
+            `/join - Стать защитником-волонтером\n` +
             `/status - Проверить статус системы\n` +
-            `/cancel - Отменить операцию\n\n` +
-            `Для жертв: используйте /report\n` +
-            `Для волонтёров: используйте /join\n\n` +
-            `Внимание: Мы не заменяем официальные правоохранительные органы.`;
+            `/help - Полная инструкция\n` +
+            `/support - Техническая поддержка\n` +
+            `/cancel - Отмена текущей операции\n\n` +
+            `*🚨 СРОЧНАЯ ПОМОЩЬ:*\n` +
+            `Для экстренных случаев обращайтесь напрямую в полицию или правоохранительные органы.\n\n` +
+            `*🛡️ КОНТАКТЫ:*\n` +
+            `Техподдержка: ${SYSTEM_CONFIG.TECH_SUPPORT}\n` +
+            `Администратор: ${SYSTEM_CONFIG.ADMIN_CONTACT}\n\n` +
+            `_Версия системы: ${SYSTEM_CONFIG.SYSTEM_VERSION}_`;
         
-        await this.sendMessage(chatId, welcomeMessage);
+        await this.sendFormattedMessage(chatId, welcomeMessage);
+        
+        logger.info(`Приветственное сообщение отправлено пользователю ${userId}`);
     }
     
     async handleHelpCommand(msg) {
         const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        
+        logger.info(`Команда /help от пользователя ${userId}`);
         
         const helpMessage = 
-            `РУКОВОДСТВО ПОЛЬЗОВАТЕЛЯ BAKELITE DEFENCE\n\n` +
-            `ДЛЯ ЖЕРТВ:\n` +
-            `1. Используйте /report\n` +
-            `2. Укажите страну, тип проблемы, описание\n` +
-            `3. Защитник свяжется с вами в течение 24 часов\n\n` +
-            `ДЛЯ ЗАЩИТНИКОВ:\n` +
-            `1. Используйте /join для регистрации\n` +
-            `2. Заполните анкету\n` +
-            `3. После проверки будете получать уведомления\n\n` +
-            `ОБЩИЕ ПРАВИЛА:\n` +
-            `• Не передавайте пароли и данные карт\n` +
-            `• Используйте псевдонимы\n` +
-            `• Сохраняйте скриншоты\n` +
-            `• Для срочной помощи: @[ваш_никнейм]\n\n` +
-            `Время работы: 24/7`;
-        
-        await this.sendMessage(chatId, helpMessage);
-    }
-    
-    async handleReportCommand(msg) {
-        const chatId = msg.chat.id;
-        const userId = msg.from.id;
-        const userName = msg.from.first_name || 'Пользователь';
-        
-        Logger.info(`Начало заявки от ${userName} (${userId})`);
-        
-        if (!this.stateManager.trackRequest(userId)) {
-            this.sendMessage(chatId, 'Лимит запросов. Подождите 1 час.');
-            return;
-        }
-        
-        this.stateManager.setState(userId, 'AWAITING_COUNTRY', {
-            userName: userName,
-            chatId: chatId,
-            startTime: Date.now(),
-            type: 'report'
-        });
-        
-        const countryPrompt = 
-            `ШАГ 1 ИЗ 3: УКАЖИТЕ СТРАНУ\n\n` +
-            `В какой стране вы находитесь?\n` +
-            `Укажите полное название страны.\n\n` +
-            `Пример: Россия, Украина, Германия, Казахстан\n\n` +
-            `Для отмены: /cancel`;
-        
-        await this.sendMessage(chatId, countryPrompt);
-    }
-    
-    async handleJoinCommand(msg) {
-        const chatId = msg.chat.id;
-        const userId = msg.from.id;
-        const userName = msg.from.first_name || 'Пользователь';
-        
-        Logger.info(`Команда /join от ${userName} (${userId})`);
-        
-        if (!this.stateManager.trackRequest(userId)) {
-            this.sendMessage(chatId, 
-                'Превышен лимит запросов. Подождите 1 час.'
-            );
-            return;
-        }
-        
-        this.stateManager.setState(userId, 'AWAITING_JOIN_NAME', {
-            userName: userName,
-            chatId: chatId,
-            startTime: Date.now(),
-            type: 'join'
-        });
-        
-        const joinMessage = 
-            `РЕГИСТРАЦИЯ ЗАЩИТНИКА\n\n` +
-            `ШАГ 1 ИЗ 4: ВАШЕ ИМЯ\n\n` +
-            `Как к вам обращаться? (Имя или псевдоним)\n\n` +
-            `Пример: Иван, Анна, Алексей\n\n` +
-            `Для отмены: /cancel`;
-        
-        await this.sendMessage(chatId, joinMessage);
-    }
-    
-    async handleStatusCommand(msg) {
-        const chatId = msg.chat.id;
-        const userId = msg.from.id;
-        
-        const statusMessage = 
-            `СТАТУС СИСТЕМЫ\n\n` +
-            `Состояние: Активно\n` +
-            `Платформа: Railway\n` +
-            `Время: ${new Date().toLocaleString('ru-RU')}\n` +
-            `Ваш ID: ${userId}\n` +
-            `Активных сессий: ${this.stateManager.userStates.size}\n\n` +
-            `Версия: 3.1.0\n` +
-            `Команды: /start /help /report /join /status /cancel\n\n` +
-            `Техподдержка: @[ваш_никнейм]`;
-        
-        await this.sendMessage(chatId, statusMessage);
-    }
-    
-    async handleCancelCommand(msg) {
-        const chatId = msg.chat.id;
-        const userId = msg.from.id;
-        
-        const state = this.stateManager.getState(userId);
-        if (state) {
-            this.stateManager.clearState(userId);
-            Logger.info(`Отмена операции пользователем ${userId}`);
-            
-            await this.sendMessage(chatId, 
-                'Операция отменена. Все временные данные удалены.\n\n' +
-                'Для начала новой операции используйте /report или /join'
-            );
-        } else {
-            await this.sendMessage(chatId, 
-                'Нет активных операций для отмены.\n\n' +
-                'Для начала работы используйте /report или /join'
-            );
-        }
-    }
-    
-    async handleMessage(msg) {
-        if (msg.text && msg.text.startsWith('/')) {
-            return;
-        }
-        
-        const userId = msg.from.id;
-        const chatId = msg.chat.id;
-        const userText = msg.text || '';
-        const state = this.stateManager.getState(userId);
-        
-        if (!state) {
-            return;
-        }
-        
-        switch (state.state) {
-            case 'AWAITING_COUNTRY':
-                await this.processCountryStep(userId, chatId, userText, state);
-                break;
-                
-            case 'AWAITING_PROBLEM_TYPE':
-                await this.processProblemTypeStep(userId, chatId, userText, state);
-                break;
-                
-            case 'AWAITING_DESCRIPTION':
-                await this.processDescriptionStep(userId, chatId, userText, state);
-                break;
-                
-            case 'AWAITING_JOIN_NAME':
-                await this.processJoinNameStep(userId, chatId, userText, state);
-                break;
-                
-            case 'AWAITING_JOIN_REGION':
-                await this.processJoinRegionStep(userId, chatId, userText, state);
-                break;
-                
-            case 'AWAITING_JOIN_SKILLS':
-                await this.processJoinSkillsStep(userId, chatId, userText, state);
-                break;
-        }
-    }
-    
-    // ====================
-    // ОБРАБОТКА ШАГОВ /report
-    // ====================
-    
-    async processCountryStep(userId, chatId, country, stateData) {
-        if (country.length < 2 || country.length > 50) {
-            await this.sendMessage(chatId,
-                'Некорректное название страны. Укажите полное название.\n\n' +
-                'Пример: Россия, Украина, Германия\n\n' +
-                'Для отмены: /cancel'
-            );
-            return;
-        }
-        
-        stateData.data.country = country.trim();
-        stateData.data.progress = '1/3';
-        this.stateManager.setState(userId, 'AWAITING_PROBLEM_TYPE', stateData.data);
-        
-        const problemTypePrompt = 
-            `ШАГ 2 ИЗ 3: ТИП ПРОБЛЕМЫ\n\n` +
-            `Выберите тип проблемы:\n\n` +
-            `1. Мошенничество\n` +
-            `2. Кибербуллинг\n` +
-            `3. Взлом аккаунта\n` +
-            `4. Вымогательство\n` +
-            `5. Другое\n\n` +
-            `Ответьте цифрой от 1 до 5\n\n` +
-            `Для отмены: /cancel`;
-        
-        await this.sendMessage(chatId, problemTypePrompt);
-        
-        Logger.info(`Пользователь ${userId} указал страну: ${country}`);
-    }
-    
-    async processProblemTypeStep(userId, chatId, problemType, stateData) {
-        const problemTypeNum = parseInt(problemType);
-        
-        if (isNaN(problemTypeNum) || problemTypeNum < 1 || problemTypeNum > 5) {
-            await this.sendMessage(chatId,
-                'Пожалуйста, выберите цифру от 1 до 5.\n\n' +
-                '1. Мошенничество\n' +
-                '2. Кибербуллинг\n' +
-                '3. Взлом аккаунта\n' +
-                '4. Вымогательство\n' +
-                '5. Другое\n\n' +
-                'Для отмены: /cancel'
-            );
-            return;
-        }
-        
-        const problemTypes = [
-            'Мошенничество',
-            'Кибербуллинг',
-            'Взлом аккаунта',
-            'Вымогательство',
-            'Другое'
-        ];
-        
-        stateData.data.problemType = problemTypes[problemTypeNum - 1];
-        stateData.data.progress = '2/3';
-        this.stateManager.setState(userId, 'AWAITING_DESCRIPTION', stateData.data);
-        
-        const descriptionPrompt = 
-            `ШАГ 3 ИЗ 3: ОПИСАНИЕ ПРОБЛЕМЫ\n\n` +
-            `Опишите подробно:\n` +
-            `• Что произошло?\n` +
-            `• Когда (дата и время)?\n` +
-            `• Какие доказательства?\n` +
-            `• Контакт (@никнейм или email)?\n\n` +
-            `Минимум 50 символов.\n\n` +
-            `Для отмены: /cancel`;
-        
-        await this.sendMessage(chatId, descriptionPrompt);
-        
-        Logger.info(`Пользователь ${userId} выбрал тип: ${problemTypes[problemTypeNum - 1]}`);
-    }
-    
-    async processDescriptionStep(userId, chatId, description, stateData) {
-        if (description.length < 50) {
-            await this.sendMessage(chatId,
-                'Описание слишком короткое. Минимум 50 символов.\n\n' +
-                'Для отмены: /cancel'
-            );
-            return;
-        }
-        
-        const reportId = 'RPT-' + Date.now().toString().slice(-8);
-        const reportTime = new Date().toISOString();
-        
-        const reportData = {
-            reportId: reportId,
-            userId: userId,
-            userName: stateData.data.userName,
-            chatId: chatId,
-            country: stateData.data.country,
-            problemType: stateData.data.problemType,
-            description: description,
-            timestamp: reportTime
-        };
-        
-        const adminMessage = 
-            `НОВАЯ ЗАЯВКА #${reportId}\n\n` +
-            `Пользователь: ${stateData.data.userName}\n` +
-            `ID: ${userId}\n` +
-            `Страна: ${stateData.data.country}\n` +
-            `Тип: ${stateData.data.problemType}\n` +
-            `Время: ${new Date(reportTime).toLocaleString('ru-RU')}\n\n` +
-            `ОПИСАНИЕ:\n${description.substring(0, 500)}${description.length > 500 ? '...' : ''}\n\n` +
-            `Ответить: tg://user?id=${userId}`;
-        
-        try {
-            await this.sendMessage(CONFIG.ADMIN_CHAT_ID, adminMessage);
-            Logger.info(`Уведомление администратору о заявке ${reportId}`);
-        } catch (error) {
-            Logger.error(`Ошибка уведомления администратора`, { error: error.message });
-        }
-        
-        const userMessage = 
-            `ЗАЯВКА #${reportId} ПРИНЯТА\n\n` +
-            `Данные:\n` +
-            `• ID: ${reportId}\n` +
-            `• Страна: ${stateData.data.country}\n` +
-            `• Тип: ${stateData.data.problemType}\n` +
-            `• Время: ${new Date().toLocaleString('ru-RU')}\n\n` +
-            `СТАТУС: Зарегистрирована\n\n` +
-            `Защитники уведомлены. Свяжутся в течение 24 часов.\n\n` +
-            `Сохраните ID: ${reportId}\n` +
-            `Контакты: @[ваш_никнейм]\n\n` +
-            `Внимание: Не передавайте пароли или данные карт.`;
-        
-        await this.sendMessage(chatId, userMessage);
-        
-        this.stateManager.clearState(userId);
-        
-        Logger.info(`Заявка ${reportId} создана`, reportData);
-    }
-    
-    // ====================
-    // ОБРАБОТКА ШАГОВ /join
-    // ====================
-    
-    async processJoinNameStep(userId, chatId, name, stateData) {
-        if (name.length < 2 || name.length > 50) {
-            await this.sendMessage(chatId,
-                'Имя слишком короткое или длинное. Укажите имя (2-50 символов).\n\n' +
-                'Пример: Иван, Анна, Алексей\n\n' +
-                'Для отмены: /cancel'
-            );
-            return;
-        }
-        
-        stateData.data.defenderName = name.trim();
-        stateData.data.progress = '1/4';
-        this.stateManager.setState(userId, 'AWAITING_JOIN_REGION', stateData.data);
-        
-        const regionPrompt = 
-            `ШАГ 2 ИЗ 4: РЕГИОН\n\n` +
-            `В какой стране/регионе вы можете помогать?\n` +
-            `Укажите страну или город.\n\n` +
-            `Пример: Россия, Украина, Москва, Киев\n\n` +
-            `Для отмены: /cancel`;
-        
-        await this.sendMessage(chatId, regionPrompt);
-        
-        Logger.info(`Защитник ${userId} указал имя: ${name}`);
-    }
-    
-    async processJoinRegionStep(userId, chatId, region, stateData) {
-        if (region.length < 2 || region.length > 50) {
-            await this.sendMessage(chatId,
-                'Некорректный регион. Укажите страну или город.\n\n' +
-                'Для отмены: /cancel'
-            );
-            return;
-        }
-        
-        stateData.data.region = region.trim();
-        stateData.data.progress = '2/4';
-        this.stateManager.setState(userId, 'AWAITING_JOIN_SKILLS', stateData.data);
-        
-        const skillsPrompt = 
-            `ШАГ 3 ИЗ 4: НАВЫКИ\n\n` +
-            `Какими навыками вы обладаете?\n\n` +
-            `Примеры:\n` +
-            `• Юрист\n` +
-            `• Психолог\n` +
-            `• IT-специалист\n` +
-            `• Переводчик\n` +
-            `• Опыт работы с жертвами\n` +
-            `• Знание законов\n` +
-            `• Другое (опишите)\n\n` +
-            `Перечислите через запятую.\n\n` +
-            `Для отмены: /cancel`;
-        
-        await this.sendMessage(chatId, skillsPrompt);
-        
-        Logger.info(`Защитник ${userId} указал регион: ${region}`);
-    }
-    
-    async processJoinSkillsStep(userId, chatId, skills, stateData) {
-        if (skills.length < 5) {
-            await this.sendMessage(chatId,
-                'Пожалуйста, опишите ваши навыки подробнее.\n\n' +
-                'Для отмены: /cancel'
-            );
-            return;
-        }
-        
-        const applicationId = 'DEF-' + Date.now().toString().slice(-8);
-        const applicationTime = new Date().toISOString();
-        
-        const applicationData = {
-            applicationId: applicationId,
-            userId: userId,
-            userName: stateData.data.defenderName,
-            originalName: stateData.data.userName,
-            chatId: chatId,
-            region: stateData.data.region,
-            skills: skills,
-            timestamp: applicationTime,
-            status: 'pending'
-        };
-        
-        const adminMessage = 
-            `НОВАЯ ЗАЯВКА НА ЗАЩИТНИКА #${applicationId}\n\n` +
-            `Имя: ${stateData.data.defenderName}\n` +
-            `Исходное имя: ${stateData.data.userName}\n` +
-            `ID: ${userId}\n` +
-            `Регион: ${stateData.data.region}\n` +
-            `Навыки: ${skills}\n` +
-            `Время: ${new Date(applicationTime).toLocaleString('ru-RU')}\n\n` +
-            `Ответить: tg://user?id=${userId}`;
-        
-        try {
-            await this.sendMessage(CONFIG.ADMIN_CHAT_ID, adminMessage);
-            Logger.info(`Уведомление администратору о защитнике ${applicationId}`);
-        } catch (error) {
-            Logger.error(`Ошибка уведомления о защитнике`, { error: error.message });
-        }
-        
-        const userMessage = 
-            `ЗАЯВКА ЗАЩИТНИКА #${applicationId}\n\n` +
-            `Ваши данные:\n` +
-            `• ID: ${applicationId}\n` +
-            `• Имя: ${stateData.data.defenderName}\n` +
-            `• Регион: ${stateData.data.region}\n` +
-            `• Навыки: ${skills}\n` +
-            `• Время подачи: ${new Date().toLocaleString('ru-RU')}\n\n` +
-            `СТАТУС: На проверке\n\n` +
-            `Администратор проверит вашу анкету.\n` +
-            `После одобрения вы будете получать уведомления о новых заявках в вашем регионе.\n\n` +
-            `Срок проверки: 1-3 дня\n` +
-            `Контакты: @[ваш_никнейм]\n\n` +
-            `Сохраните ID заявки: ${applicationId}`;
-        
-        await this.sendMessage(chatId, userMessage);
-        
-        this.stateManager.clearState(userId);
-        
-        Logger.info(`Заявка защитника ${applicationId} создана`, applicationData);
-    }
-    
-    // ====================
-    // ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
-    // ====================
-    
-    async sendMessage(chatId, text) {
-        try {
-            await this.bot.sendMessage(chatId, text, {
-                parse_mode: 'HTML',
-                disable_web_page_preview: true
-            });
-            return true;
-        } catch (error) {
-            Logger.error(`Ошибка отправки сообщения ${chatId}`, {
-                error: error.message
-            });
-            return false;
-        }
-    }
-    
-    startServer() {
-        return new Promise((resolve, reject) => {
-            this.app.listen(CONFIG.PORT, '0.0.0.0', () => {
-                Logger.info(`Веб-сервер запущен на порту ${CONFIG.PORT}`);
-                resolve();
-            }).on('error', (error) => {
-                Logger.error(`Ошибка запуска сервера`, error);
-                reject(error);
-            });
-        });
-    }
-}
-
-// ====================
-// ЗАПУСК СИСТЕМЫ
-// ====================
-
-async function main() {
-    try {
-        Logger.info('Запуск системы Bakelite Defence');
-        
-        const bot = new BakeliteBot();
-        await bot.startServer();
-        
-        Logger.info('Система успешно запущена');
-        console.log('\n' + '='.repeat(60));
-        console.log('✅ СИСТЕМА ЗАПУЩЕНА УСПЕШНО');
-        console.log('📱 Доступные команды:');
-        console.log('  /start - Начало работы');
-        console.log('  /help - Помощь');
-        console.log('  /report - Подать заявку');
-        console.log('  /join - Стать защитником');
-        console.log('  /status - Статус системы');
-        console.log('  /cancel - Отмена операции');
-        console.log('='.repeat(60) + '\n');
-        
-    } catch (error) {
-        Logger.error('Критическая ошибка запуска', error);
-        process.exit(1);
-    }
-}
-
-main();
+            `📚 *РУКОВОДСТВО ПОЛЬЗОВАТЕЛЯ ${SYSTEM_CONFIG.SYSTEM_NAME}*\n\n` +
+            `*1. ДЛЯ ЖЕРТВ КИБЕРПРЕСТУПЛЕНИЙ:*\n` +
+            `   🔹 Используйте команду /report\n` +
+            `   🔹 Следуйте инструкциям шаг за шагом\n` +
+            `   🔹 Укажите страну, тип проблемы, подробное описание\n` +
+            `   🔹 Защитник свяжется с вами в течение 24 часов\n\n` +
+            `*2. ДЛЯ ВОЛОНТЕРОВ-ЗАЩИТНИКОВ:*\n` +
+            `   🔹 Используйте команду /join\n` +
+            `   🔹 Заполните анкету защитника\n` +
+            `   🔹 После проверки получите доступ к системе\n` +
+            `   🔹 Получайте уведомления о заявках в вашем регионе\n\n` +
+            `*3. ПРАВИЛА БЕЗОПАСНОСТИ:*\n` +
+            `   🔸 НИКОГДА не сообщайте пароли, PIN-коды\n` +
+            `   🔸 НЕ пересылайте данные банковских карт\n` +
+            `   🔸 НЕ указывайте паспортные данные\n` +
+            `   🔸 Используйте псевдонимы для конфиденциальности\n` +
+            `   🔸 Сохраняйте все скриншоты и доказательства\n\n` +
+            `*4. ПРОЦЕСС РАБОТЫ:*\n` +
+            `   ✅ Подача заявки (/report)\n` +
+            `   ✅ Проверка и регистрация заявки\n` +
+            `   ✅ Назначение защитника из региона\n` +
+            `   ✅ Связь защитника с жертвой\n` +
+            `   ✅ Решение проблемы/консультация\n` +
+            `   ✅ Оценка помощи и закрытие кейса\n\n` +
+            `*5. ВРЕМЯ РАБОТЫ:*\n` +
+            `   🕐 Круглосуточно (24/7)\n` +
+            `   🕐 Среднее время ответа: 12-24 часа\n` +
+            `   🕐 Для срочных случаев: прямая связь с администратором\n\n` +
+            `*6. КОНТАКТЫ И ПОДДЕРЖКА:*\n` +
+            `   💻 Техподдержка: ${SYSTEM_CONFIG.TECH_SUPPORT}\n` +
+            `   👑 Администратор: ${SYSTEM_CONFIG.ADMIN_CONTACT}\n` +
+            `   📧 Экстренная связь: ${SYSTEM_CONFIG.TECH_SUPPORT}\n\n` +
+            `*7. ЮРИДИЧЕСКАЯ ИНФОРМАЦИЯ:*\n` +
+            `   ⚖️ Система не является юридической организацией\n` +
+            `   ⚖️ Не заменяет официальные правоохранительные органы\n` +
+            `  
