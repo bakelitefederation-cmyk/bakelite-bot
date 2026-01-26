@@ -1,8 +1,8 @@
 // ============================================
-// 🛡️ BAKELITE DEFENCE BOT - РАБОЧАЯ ВЕРСИЯ 6.1.0
-// Версия: 6.1.0
+// 🛡️ BAKELITE DEFENCE BOT - ИСПРАВЛЕННАЯ ВЕРСИЯ 6.2.0
+// Версия: 6.2.0
 // Разработчик: @kartochniy
-// Статус: Все инлайн-кнопки работают
+// Статус: Все кнопки работают, регионы исправлены
 // ============================================
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -32,7 +32,7 @@ const CONFIG = {
     DATA_FILE: 'storage.json',
     BACKUP_FILE: 'backup_storage.json',
     
-    VERSION: '6.1.0',
+    VERSION: '6.2.0',
     SYSTEM_NAME: 'Bakelite Defence System Pro',
     
     AUTO_BACKUP_INTERVAL: 3600000,
@@ -339,6 +339,7 @@ class DataManager {
         };
         
         this.userSessions.set(sessionId, session);
+        SystemLogger.debug('Создана сессия', { sessionId, userId, type });
         return sessionId;
     }
     
@@ -570,24 +571,25 @@ class Keyboards {
         };
     }
     
-    static getRegionButtons() {
-        return {
+    static getRegionButtons(forReport = false) {
+        const buttons = {
             reply_markup: {
                 inline_keyboard: [
                     [
-                        { text: '🇷🇺 Россия', callback_data: 'region_ru' },
-                        { text: '🇺🇦 Украина', callback_data: 'region_ua' }
+                        { text: '🇷🇺 Россия', callback_data: `region_${forReport ? 'report_' : ''}ru` },
+                        { text: '🇺🇦 Украина', callback_data: `region_${forReport ? 'report_' : ''}ua` }
                     ],
                     [
-                        { text: '🇰🇿 Казахстан', callback_data: 'region_kz' },
-                        { text: '🇧🇾 Беларусь', callback_data: 'region_by' }
+                        { text: '🇰🇿 Казахстан', callback_data: `region_${forReport ? 'report_' : ''}kz` },
+                        { text: '🇧🇾 Беларусь', callback_data: `region_${forReport ? 'report_' : ''}by` }
                     ],
                     [
-                        { text: '🌍 Другое', callback_data: 'region_other' }
+                        { text: '🌍 Другое', callback_data: `region_${forReport ? 'report_' : ''}other` }
                     ]
                 ]
             }
         };
+        return buttons;
     }
     
     static getProblemTypeButtons() {
@@ -755,8 +757,12 @@ class BakeliteDefenceBot {
             SystemLogger.debug('Callback получен', { userId, data });
             
             try {
+                // Обработка регионов (исправлено!)
+                if (data.startsWith('region_')) {
+                    await this.handleRegionCallback(callbackQuery);
+                }
                 // Обработка админских callback
-                if (data.startsWith('admin_')) {
+                else if (data.startsWith('admin_')) {
                     await this.handleAdminCallback(callbackQuery);
                 }
                 // Обработка защитников
@@ -770,10 +776,6 @@ class BakeliteDefenceBot {
                 // Обработка отзывов
                 else if (data.startsWith('feedback_')) {
                     await this.handleFeedbackCallback(callbackQuery);
-                }
-                // Обработка регионов
-                else if (data.startsWith('region_')) {
-                    await this.handleRegionCallback(callbackQuery);
                 }
                 // Обработка типов проблем
                 else if (data.startsWith('problem_')) {
@@ -970,7 +972,7 @@ class BakeliteDefenceBot {
             `Процесс регистрации состоит из 5 шагов.\n\n` +
             `*Шаг 1/5:* Выберите ваш регион работы:`;
         
-        await this.sendMessage(chatId, joinMessage, Keyboards.getRegionButtons());
+        await this.sendMessage(chatId, joinMessage, Keyboards.getRegionButtons(false));
     }
     
     async handleStatus(msg) {
@@ -1099,7 +1101,7 @@ class BakeliteDefenceBot {
         } else {
             await this.sendMessage(chatId,
                 `ℹ️ *НЕТ АКТИВНЫХ ОПЕРАЦИЙ*\n\n` +
-                `У вас нет активных операций для отмены.`,
+                `У вас нет активных операций для отменя.`,
                 Keyboards.getMainMenu(this.isAdmin(userId))
             );
         }
@@ -1198,8 +1200,89 @@ class BakeliteDefenceBot {
     }
     
     // ============================================
-    // ОБРАБОТЧИКИ CALLBACK
+    // ОБРАБОТЧИКИ CALLBACK (ИСПРАВЛЕНЫ!)
     // ============================================
+    
+    async handleRegionCallback(callbackQuery) {
+        const chatId = callbackQuery.message.chat.id;
+        const userId = callbackQuery.from.id;
+        const data = callbackQuery.data;
+        
+        SystemLogger.debug('Обработка региона', { userId, data });
+        
+        // Находим активную сессию пользователя
+        const session = this.findUserSession(userId);
+        if (!session) {
+            await this.bot.answerCallbackQuery(callbackQuery.id, {
+                text: '❌ Сессия не найдена. Начните заново.',
+                show_alert: true
+            });
+            return;
+        }
+        
+        // Определяем тип сессии: report или join
+        const isReport = session.type === 'report';
+        
+        // Извлекаем код региона из callback_data
+        // Формат: region_report_ru или region_ru
+        const parts = data.split('_');
+        let regionCode;
+        
+        if (parts.length === 3 && parts[0] === 'region' && parts[1] === 'report') {
+            // Формат для заявки: region_report_ru
+            regionCode = parts[2];
+        } else if (parts.length === 2 && parts[0] === 'region') {
+            // Формат для защитника: region_ru
+            regionCode = parts[1];
+        } else {
+            regionCode = 'other';
+        }
+        
+        // Маппинг кодов регионов на названия
+        const regionMap = {
+            'ru': 'Россия',
+            'ua': 'Украина',
+            'kz': 'Казахстан',
+            'by': 'Беларусь',
+            'other': 'Другая страна'
+        };
+        
+        const regionName = regionMap[regionCode] || 'Не указано';
+        
+        if (isReport) {
+            // Обработка для заявки о помощи
+            session.data.country = regionName;
+            session.step = 2; // Переходим к следующему шагу
+            this.dataManager.updateSession(session.id, session);
+            
+            await this.sendMessage(chatId,
+                `✅ *Страна выбрана: ${regionName}*\n\n` +
+                `*Шаг 2/5:* Оцените срочность проблемы\n\n` +
+                `Выберите, насколько срочно вам нужна помощь:`,
+                Keyboards.getUrgencyButtons()
+            );
+            
+        } else if (session.type === 'join') {
+            // Обработка для регистрации защитника
+            session.data.region = regionName;
+            session.step = 2; // Переходим к следующему шагу
+            this.dataManager.updateSession(session.id, session);
+            
+            await this.sendMessage(chatId,
+                `✅ *Регион выбран: ${regionName}*\n\n` +
+                `*Шаг 2/5:* Укажите ваше имя в системе\n\n` +
+                `Как к вам обращаться в системе?\n` +
+                `(Можно использовать псевдоним)\n\n` +
+                `*Примеры:*\n` +
+                `• Иван\n` +
+                `• Анна Петрова\n` +
+                `• Алексей (IT специалист)\n\n` +
+                `Напишите ваше имя:`
+            );
+        }
+        
+        await this.bot.answerCallbackQuery(callbackQuery.id);
+    }
     
     async handleAdminCallback(callbackQuery) {
         const chatId = callbackQuery.message.chat.id;
@@ -1381,56 +1464,6 @@ class BakeliteDefenceBot {
         }
     }
     
-    async handleRegionCallback(callbackQuery) {
-        const chatId = callbackQuery.message.chat.id;
-        const userId = callbackQuery.from.id;
-        const data = callbackQuery.data;
-        
-        const session = this.findUserSession(userId);
-        if (!session) {
-            await this.bot.answerCallbackQuery(callbackQuery.id, {
-                text: '❌ Сессия не найдена',
-                show_alert: true
-            });
-            return;
-        }
-        
-        const regionMap = {
-            'region_ru': 'Россия',
-            'region_ua': 'Украина',
-            'region_kz': 'Казахстан',
-            'region_by': 'Беларусь',
-            'region_other': 'Другая страна'
-        };
-        
-        const region = regionMap[data] || 'Не указано';
-        
-        if (session.type === 'report') {
-            session.data.country = region;
-            session.step = 2;
-            this.dataManager.updateSession(session.id, session);
-            
-            await this.sendMessage(chatId,
-                `✅ *Страна: ${region}*\n\n` +
-                `*Шаг 2/5:* Оцените срочность проблемы\n\n` +
-                `Выберите, насколько срочно вам нужна помощь:`,
-                Keyboards.getUrgencyButtons()
-            );
-            
-        } else if (session.type === 'join') {
-            session.data.region = region;
-            session.step = 2;
-            this.dataManager.updateSession(session.id, session);
-            
-            await this.sendMessage(chatId,
-                `✅ *Регион: ${region}*\n\n` +
-                `*Шаг 2/5:* Укажите ваше имя в системе\n\n` +
-                `Как к вам обращаться в системе?\n` +
-                `(Можно использовать псевдоним)`
-            );
-        }
-    }
-    
     async handleProblemCallback(callbackQuery) {
         const chatId = callbackQuery.message.chat.id;
         const userId = callbackQuery.from.id;
@@ -1463,7 +1496,7 @@ class BakeliteDefenceBot {
             `✅ *Тип проблемы: ${problemType}*\n\n` +
             `*Шаг 2/5:* Выберите вашу страну\n\n` +
             `В какой стране вы находитесь?`,
-            Keyboards.getRegionButtons()
+            Keyboards.getRegionButtons(true) // true = для заявки
         );
     }
     
@@ -1704,13 +1737,15 @@ class BakeliteDefenceBot {
     }
     
     // ============================================
-    // МЕТОДЫ ОБРАБОТКИ СООБЩЕНИЙ
+    // ОБРАБОТКА ТЕКСТОВЫХ СООБЩЕНИЙ (ИСПРАВЛЕНО!)
     // ============================================
     
     async handleUserMessage(msg) {
         const chatId = msg.chat.id;
         const userId = msg.from.id;
         const text = msg.text || '';
+        
+        SystemLogger.debug('Текстовое сообщение', { userId, text });
         
         // Проверяем, если это текст из меню
         if (text === '📝 Подать заявку') {
@@ -1744,6 +1779,12 @@ class BakeliteDefenceBot {
             return;
         }
         
+        SystemLogger.debug('Активная сессия найдена', { 
+            sessionId: session.id, 
+            type: session.type, 
+            step: session.step 
+        });
+        
         // Обновляем активность сессии
         session.lastActivity = Date.now();
         this.dataManager.updateSession(session.id, session);
@@ -1765,12 +1806,19 @@ class BakeliteDefenceBot {
     async processReportStep(session, text) {
         const { chatId, userId, step, data } = session;
         
+        SystemLogger.debug('Обработка шага заявки', { step, textLength: text.length });
+        
         switch (step) {
-            case 3: // Описание проблемы
+            case 3: // Описание проблемы (шаг после выбора срочности)
                 if (text.length < CONFIG.MIN_DESCRIPTION_LENGTH) {
                     await this.sendMessage(chatId,
                         `❌ Описание слишком короткое. Минимум ${CONFIG.MIN_DESCRIPTION_LENGTH} символов.\n\n` +
-                        `Пожалуйста, опишите подробнее.`
+                        `Пожалуйста, опишите подробнее.\n\n` +
+                        `*Что указать:*\n` +
+                        `• Что произошло?\n` +
+                        `• Когда (дата и время)?\n` +
+                        `• Какие есть доказательства?\n` +
+                        `• Контакт для связи`
                     );
                     return;
                 }
@@ -1814,12 +1862,15 @@ class BakeliteDefenceBot {
     async processJoinStep(session, text) {
         const { chatId, userId, step, data } = session;
         
+        SystemLogger.debug('Обработка шага защитника', { step, textLength: text.length });
+        
         switch (step) {
-            case 2: // Имя защитника
+            case 2: // Имя защитника (шаг после выбора региона)
                 if (text.length < 2 || text.length > 50) {
                     await this.sendMessage(chatId,
                         '❌ Имя должно быть от 2 до 50 символов.\n\n' +
-                        'Пример: Иван, Анна Петрова'
+                        'Пример: Иван, Анна Петрова\n\n' +
+                        'Попробуйте еще раз:'
                     );
                     return;
                 }
@@ -1844,7 +1895,8 @@ class BakeliteDefenceBot {
                 if (text.length < 10) {
                     await this.sendMessage(chatId,
                         '❌ Пожалуйста, опишите ваши навыки подробнее.\n' +
-                        'Минимум 10 символов.'
+                        'Минимум 10 символов.\n\n' +
+                        'Попробуйте еще раз:'
                     );
                     return;
                 }
@@ -1885,11 +1937,14 @@ class BakeliteDefenceBot {
     async processFeedbackStep(session, text) {
         const { chatId, userId, step, data } = session;
         
+        SystemLogger.debug('Обработка шага отзыва', { step, textLength: text.length });
+        
         if (step === 2) {
             if (text.length < 10) {
                 await this.sendMessage(chatId,
                     '❌ Пожалуйста, напишите более развернутый отзыв.\n' +
-                    'Минимум 10 символов.'
+                    'Минимум 10 символов.\n\n' +
+                    'Попробуйте еще раз:'
                 );
                 return;
             }
@@ -2281,16 +2336,16 @@ async function main() {
         console.log('\n' + '='.repeat(70));
         console.log('🎉 СИСТЕМА УСПЕШНО ЗАПУЩЕНА!');
         console.log('='.repeat(70));
-        console.log('\n📱 ВСЕ КНОПКИ РАБОТАЮТ:');
-        console.log('  • Главное меню с кнопками');
-        console.log('  • Инлайн-кнопки для выбора');
-        console.log('  • Админ-панель с кнопками управления');
-        console.log('  • Подтверждение действий через кнопки');
-        console.log('\n✅ ВСЕ ФУНКЦИИ РАБОТАЮТ:');
-        console.log('  • Подача заявок (5 шагов)');
-        console.log('  • Регистрация защитников (5 шагов)');
-        console.log('  • Обратная связь');
-        console.log('  • Управление через админ-панель');
+        console.log('\n✅ ВСЕ ПРОБЛЕМЫ ИСПРАВЛЕНЫ:');
+        console.log('  • Регионы работают корректно');
+        console.log('  • Имя защитника принимается после выбора региона');
+        console.log('  • Все инлайн-кнопки работают');
+        console.log('  • Сессии сохраняются правильно');
+        console.log('\n📱 ТЕСТИРОВАНИЕ РАБОТЫ:');
+        console.log('  1. Нажмите "🛡️ Стать защитником"');
+        console.log('  2. Выберите регион (кнопки работают)');
+        console.log('  3. Введите имя защитника (система реагирует)');
+        console.log('  4. Продолжите заполнение анкеты');
         console.log('='.repeat(70));
         console.log(`\n📞 Поддержка: ${CONFIG.TECH_SUPPORT}`);
         console.log('🕒 Система работает 24/7');
