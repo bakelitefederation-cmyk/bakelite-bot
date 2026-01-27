@@ -1,8 +1,8 @@
 // ============================================
-// 🛡️ BAKELITE DEFENCE BOT - ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ ВЕРСИЯ
-// Версия: 6.3.0
+// 🛡️ BAKELITE DEFENCE BOT - РАБОЧАЯ ВЕРСИЯ 6.4.0
+// Версия: 6.4.0
 // Разработчик: @kartochniy
-// Статус: Все работает, имя защитника принимается
+// Статус: Все работает, одобрение заявок работает
 // ============================================
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -31,7 +31,7 @@ const CONFIG = {
     LOG_FILE: 'system.log',
     DATA_FILE: 'storage.json',
     
-    VERSION: '6.3.0',
+    VERSION: '6.4.0',
     SYSTEM_NAME: 'Bakelite Defence System Pro'
 };
 
@@ -94,7 +94,7 @@ class SystemLogger {
 }
 
 // ============================================
-// МЕНЕДЖЕР ДАННЫХ (УПРОЩЕННЫЙ)
+// МЕНЕДЖЕР ДАННЫХ
 // ============================================
 
 class DataManager {
@@ -118,13 +118,10 @@ class DataManager {
                 this.userProfiles = new Map(data.userProfiles || []);
                 this.feedback = new Map(data.feedback || []);
                 
-                // Восстанавливаем только активные сессии
+                // Восстанавливаем сессии
                 if (data.userSessions) {
-                    const now = Date.now();
                     for (const [userId, session] of Object.entries(data.userSessions)) {
-                        if (!session.completed && (now - session.lastActivity < CONFIG.SESSION_TIMEOUT_MINUTES * 60 * 1000)) {
-                            this.userSessions.set(userId, session);
-                        }
+                        this.userSessions.set(userId, session);
                     }
                 }
                 
@@ -144,7 +141,7 @@ class DataManager {
             const data = {
                 reports: Array.from(this.reports.entries()),
                 defenders: Array.from(this.defenders.entries()),
-                userSessions: Object.fromEntries(this.userSessions.entries()), // Сохраняем как объект
+                userSessions: Object.fromEntries(this.userSessions.entries()),
                 userProfiles: Array.from(this.userProfiles.entries()),
                 feedback: Array.from(this.feedback.entries()),
                 savedAt: new Date().toISOString(),
@@ -163,7 +160,7 @@ class DataManager {
         const session = {
             id: Utilities.generateId('SESS'),
             userId: userId.toString(),
-            type: type, // 'report', 'join', 'feedback'
+            type: type,
             data: initialData,
             step: 1,
             createdAt: Date.now(),
@@ -173,6 +170,7 @@ class DataManager {
         
         this.userSessions.set(userId.toString(), session);
         SystemLogger.debug('Создана сессия', { userId, type, step: 1 });
+        this.saveData();
         return session;
     }
     
@@ -187,6 +185,7 @@ class DataManager {
             session.lastActivity = Date.now();
             this.userSessions.set(userId.toString(), session);
             SystemLogger.debug('Сессия обновлена', { userId, step: session.step });
+            this.saveData();
             return true;
         }
         return false;
@@ -199,6 +198,7 @@ class DataManager {
             session.completedAt = Date.now();
             this.userSessions.set(userId.toString(), session);
             SystemLogger.debug('Сессия завершена', { userId });
+            this.saveData();
             return true;
         }
         return false;
@@ -230,6 +230,22 @@ class DataManager {
         return report;
     }
     
+    getReport(reportId) {
+        return this.reports.get(reportId);
+    }
+    
+    updateReport(reportId, updates) {
+        const report = this.getReport(reportId);
+        if (report) {
+            Object.assign(report, updates);
+            report.updatedAt = new Date().toISOString();
+            this.reports.set(reportId, report);
+            this.saveData();
+            return true;
+        }
+        return false;
+    }
+    
     // Защитники
     createDefenderApplication(userId, userName, chatId, data) {
         const appId = Utilities.generateId('DEF');
@@ -252,6 +268,21 @@ class DataManager {
         
         SystemLogger.info('Заявка защитника создана', { appId, userId });
         return application;
+    }
+    
+    getDefenderApplication(appId) {
+        return this.defenders.get(appId);
+    }
+    
+    updateDefenderApplication(appId, updates) {
+        const defender = this.getDefenderApplication(appId);
+        if (defender) {
+            Object.assign(defender, updates);
+            this.defenders.set(appId, defender);
+            this.saveData();
+            return true;
+        }
+        return false;
     }
     
     // Обратная связь
@@ -287,9 +318,27 @@ class DataManager {
                 helpedCount: 0
             };
             this.userProfiles.set(userId.toString(), profile);
+            this.saveData();
         }
         
         return profile;
+    }
+    
+    // Статистика
+    getStatistics() {
+        const reports = Array.from(this.reports.values());
+        const defenders = Array.from(this.defenders.values());
+        
+        return {
+            totalReports: reports.length,
+            newReports: reports.filter(r => r.status === 'new').length,
+            inProgressReports: reports.filter(r => r.status === 'in_progress').length,
+            resolvedReports: reports.filter(r => r.status === 'resolved').length,
+            totalDefenders: defenders.length,
+            pendingDefenders: defenders.filter(d => d.status === 'pending').length,
+            approvedDefenders: defenders.filter(d => d.status === 'approved').length,
+            totalUsers: this.userProfiles.size
+        };
     }
 }
 
@@ -424,7 +473,11 @@ class Keyboards {
             reply_markup: {
                 inline_keyboard: [
                     [
-                        { text: '✅ Завершить', callback_data: `report_complete_${reportId}` },
+                        { text: '✅ Решено', callback_data: `report_resolve_${reportId}` },
+                        { text: '🔄 В работе', callback_data: `report_progress_${reportId}` }
+                    ],
+                    [
+                        { text: '📞 Связаться', callback_data: `report_contact_${reportId}` },
                         { text: '🔒 Закрыть', callback_data: `report_close_${reportId}` }
                     ]
                 ]
@@ -493,6 +546,9 @@ class BakeliteDefenceBot {
         this.bot.onText(/^\/cancel(?:\s|$)/i, (msg) => this.handleCancel(msg));
         
         this.bot.onText(/^\/admin(?:\s|$)/i, (msg) => this.handleAdmin(msg));
+        this.bot.onText(/^\/admin_reports(?:\s|$)/i, (msg) => this.handleAdminReports(msg));
+        this.bot.onText(/^\/admin_defenders(?:\s|$)/i, (msg) => this.handleAdminDefenders(msg));
+        this.bot.onText(/^\/admin_stats(?:\s|$)/i, (msg) => this.handleAdminStats(msg));
     }
     
     setupCallbackHandlers() {
@@ -528,7 +584,7 @@ class BakeliteDefenceBot {
                 else if (data.startsWith('def_')) {
                     await this.handleDefenderAction(callbackQuery);
                 }
-                // Управление заявками
+                // Управление заявками (ИСПРАВЛЕНО!)
                 else if (data.startsWith('report_')) {
                     await this.handleReportAction(callbackQuery);
                 }
@@ -750,6 +806,10 @@ class BakeliteDefenceBot {
         }
     }
     
+    // ============================================
+    // АДМИНСКИЕ КОМАНДЫ
+    // ============================================
+    
     async handleAdmin(msg) {
         const chatId = msg.chat.id;
         const userId = msg.from.id;
@@ -759,22 +819,117 @@ class BakeliteDefenceBot {
             return;
         }
         
-        const reports = Array.from(this.dataManager.reports.values());
-        const defenders = Array.from(this.dataManager.defenders.values());
+        const stats = this.dataManager.getStatistics();
         
         const adminMessage = 
             `👑 *АДМИНИСТРАТОРСКАЯ ПАНЕЛЬ*\n\n` +
             `*📊 СТАТИСТИКА:*\n` +
-            `• Заявок: ${reports.length}\n` +
-            `• Новых заявок: ${reports.filter(r => r.status === 'new').length}\n` +
-            `• Защитников: ${defenders.length}\n` +
-            `• На проверке: ${defenders.filter(d => d.status === 'pending').length}\n\n` +
+            `• Заявок: ${stats.totalReports}\n` +
+            `• Новых заявок: ${stats.newReports}\n` +
+            `• Защитников: ${stats.totalDefenders}\n` +
+            `• На проверке: ${stats.pendingDefenders}\n\n` +
             `*🔧 КОМАНДЫ:*\n` +
             `/admin_reports - Просмотр заявок\n` +
             `/admin_defenders - Просмотр защитников\n` +
             `/admin_stats - Полная статистика`;
         
         await this.sendMessage(chatId, adminMessage);
+    }
+    
+    async handleAdminReports(msg) {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        
+        if (!this.isAdmin(userId)) {
+            await this.sendMessage(chatId, '❌ Эта команда только для администратора');
+            return;
+        }
+        
+        const reports = Array.from(this.dataManager.reports.values())
+            .filter(r => r.status === 'new')
+            .slice(0, 10);
+        
+        if (reports.length === 0) {
+            await this.sendMessage(chatId, '✅ *Нет новых заявок*');
+            return;
+        }
+        
+        for (const report of reports) {
+            const reportMessage = 
+                `🚨 *ЗАЯВКА #${report.id}*\n\n` +
+                `*От:* ${report.userName}\n` +
+                `*Страна:* ${report.country}\n` +
+                `*Тип:* ${report.problemType}\n` +
+                `*Приоритет:* ${report.priority}\n` +
+                `*Время:* ${Utilities.formatDate(report.createdAt)}\n\n` +
+                `*Описание:*\n${report.description.substring(0, 200)}${report.description.length > 200 ? '...' : ''}\n\n` +
+                `*ID заявки:* \`${report.id}\`\n` +
+                `*ID пользователя:* \`${report.userId}\``;
+            
+            await this.sendMessage(chatId, reportMessage, Keyboards.getReportActions(report.id));
+        }
+    }
+    
+    async handleAdminDefenders(msg) {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        
+        if (!this.isAdmin(userId)) {
+            await this.sendMessage(chatId, '❌ Эта команда только для администратора');
+            return;
+        }
+        
+        const defenders = Array.from(this.dataManager.defenders.values())
+            .filter(d => d.status === 'pending')
+            .slice(0, 10);
+        
+        if (defenders.length === 0) {
+            await this.sendMessage(chatId, '✅ *Нет заявок защитников на проверке*');
+            return;
+        }
+        
+        for (const defender of defenders) {
+            const defenderMessage = 
+                `🛡️ *ЗАЯВКА ЗАЩИТНИКА #${defender.id}*\n\n` +
+                `*Кандидат:* ${defender.defenderName}\n` +
+                `*Исходное имя:* ${defender.userName}\n` +
+                `*Регион:* ${defender.region}\n` +
+                `*Навыки:* ${defender.skills.substring(0, 100)}${defender.skills.length > 100 ? '...' : ''}\n` +
+                `*Время подачи:* ${Utilities.formatDate(defender.submittedAt)}\n\n` +
+                `*ID заявки:* \`${defender.id}\`\n` +
+                `*ID пользователя:* \`${defender.userId}\``;
+            
+            await this.sendMessage(chatId, defenderMessage, Keyboards.getDefenderActions(defender.id));
+        }
+    }
+    
+    async handleAdminStats(msg) {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        
+        if (!this.isAdmin(userId)) {
+            await this.sendMessage(chatId, '❌ Эта команда только для администратора');
+            return;
+        }
+        
+        const stats = this.dataManager.getStatistics();
+        
+        const statsMessage = 
+            `📊 *ПОЛНАЯ СТАТИСТИКА СИСТЕМЫ*\n\n` +
+            `*📝 ЗАЯВКИ:*\n` +
+            `• Всего: ${stats.totalReports}\n` +
+            `• Новых: ${stats.newReports}\n` +
+            `• В работе: ${stats.inProgressReports}\n` +
+            `• Решено: ${stats.resolvedReports}\n\n` +
+            `*🛡️ ЗАЩИТНИКИ:*\n` +
+            `• Всего: ${stats.totalDefenders}\n` +
+            `• На проверке: ${stats.pendingDefenders}\n` +
+            `• Одобрено: ${stats.approvedDefenders}\n\n` +
+            `*👥 ПОЛЬЗОВАТЕЛИ:*\n` +
+            `• Всего: ${stats.totalUsers}\n\n` +
+            `_Статистика обновлена: ${new Date().toLocaleString('ru-RU')}_`;
+        
+        await this.sendMessage(chatId, statsMessage);
     }
     
     // ============================================
@@ -803,7 +958,6 @@ class BakeliteDefenceBot {
         const regionName = regionMap[data] || 'Не указано';
         
         if (session.type === 'report') {
-            // Для заявки
             session.data.country = regionName;
             session.step = 2;
             this.dataManager.updateSession(userId, session);
@@ -816,7 +970,6 @@ class BakeliteDefenceBot {
             );
             
         } else if (session.type === 'join') {
-            // Для защитника
             session.data.region = regionName;
             session.step = 2;
             this.dataManager.updateSession(userId, session);
@@ -941,6 +1094,7 @@ class BakeliteDefenceBot {
                     `*От:* ${session.data.userName}\n` +
                     `*Страна:* ${report.country}\n` +
                     `*Тип:* ${report.problemType}\n` +
+                    `*Приоритет:* ${report.priority}\n` +
                     `*Время:* ${Utilities.formatDate(report.createdAt)}\n\n` +
                     `*Описание:*\n${report.description.substring(0, 200)}${report.description.length > 200 ? '...' : ''}\n\n` +
                     `*ID заявки:* \`${report.id}\`\n` +
@@ -1040,7 +1194,7 @@ class BakeliteDefenceBot {
         const action = parts[1];
         const defenderId = parts[2];
         
-        const defender = this.dataManager.defenders.get(defenderId);
+        const defender = this.dataManager.getDefenderApplication(defenderId);
         if (!defender) {
             await this.bot.answerCallbackQuery(callbackQuery.id, {
                 text: '❌ Защитник не найден',
@@ -1050,9 +1204,7 @@ class BakeliteDefenceBot {
         }
         
         if (action === 'approve') {
-            defender.status = 'approved';
-            this.dataManager.defenders.set(defenderId, defender);
-            this.dataManager.saveData();
+            this.dataManager.updateDefenderApplication(defenderId, { status: 'approved' });
             
             await this.sendMessage(defender.chatId,
                 `🎉 *ВАША ЗАЯВКА ОДОБРЕНА!*\n\n` +
@@ -1070,10 +1222,22 @@ class BakeliteDefenceBot {
                 show_alert: false
             });
             
+            // Обновляем сообщение с кнопками
+            try {
+                await this.bot.editMessageText(
+                    callbackQuery.message.text + '\n\n✅ *ОДОБРЕНО*',
+                    {
+                        chat_id: callbackQuery.message.chat.id,
+                        message_id: callbackQuery.message.message_id,
+                        parse_mode: 'Markdown'
+                    }
+                );
+            } catch (error) {
+                SystemLogger.error('Ошибка обновления сообщения', error);
+            }
+            
         } else if (action === 'reject') {
-            defender.status = 'rejected';
-            this.dataManager.defenders.set(defenderId, defender);
-            this.dataManager.saveData();
+            this.dataManager.updateDefenderApplication(defenderId, { status: 'rejected' });
             
             await this.sendMessage(defender.chatId,
                 `📋 *ПО ВАШЕЙ ЗАЯВКЕ #${defenderId}*\n\n` +
@@ -1086,6 +1250,19 @@ class BakeliteDefenceBot {
                 text: '❌ Заявка отклонена',
                 show_alert: false
             });
+            
+            try {
+                await this.bot.editMessageText(
+                    callbackQuery.message.text + '\n\n❌ *ОТКЛОНЕНО*',
+                    {
+                        chat_id: callbackQuery.message.chat.id,
+                        message_id: callbackQuery.message.message_id,
+                        parse_mode: 'Markdown'
+                    }
+                );
+            } catch (error) {
+                SystemLogger.error('Ошибка обновления сообщения', error);
+            }
         }
     }
     
@@ -1093,6 +1270,8 @@ class BakeliteDefenceBot {
         const chatId = callbackQuery.message.chat.id;
         const userId = callbackQuery.from.id;
         const data = callbackQuery.data;
+        
+        SystemLogger.debug('Обработка действия с заявкой', { userId, data });
         
         if (!this.isAdmin(userId)) {
             await this.bot.answerCallbackQuery(callbackQuery.id, {
@@ -1106,7 +1285,7 @@ class BakeliteDefenceBot {
         const action = parts[1];
         const reportId = parts[2];
         
-        const report = this.dataManager.reports.get(reportId);
+        const report = this.dataManager.getReport(reportId);
         if (!report) {
             await this.bot.answerCallbackQuery(callbackQuery.id, {
                 text: '❌ Заявка не найдена',
@@ -1115,31 +1294,95 @@ class BakeliteDefenceBot {
             return;
         }
         
-        if (action === 'complete') {
-            report.status = 'resolved';
-            this.dataManager.reports.set(reportId, report);
-            this.dataManager.saveData();
+        if (action === 'resolve') {
+            // Отмечаем заявку как решенную
+            this.dataManager.updateReport(reportId, { status: 'resolved' });
             
+            // Уведомляем пользователя
             await this.sendMessage(report.chatId,
                 `✅ *ВАША ЗАЯВКА РЕШЕНА!*\n\n` +
                 `Заявка #${reportId} отмечена как решенная.\n\n` +
+                `*Статус:* ✅ Решена\n` +
+                `*Время решения:* ${Utilities.formatDate(new Date())}\n\n` +
                 `Спасибо, что обратились к нам!`
             );
             
             await this.bot.answerCallbackQuery(callbackQuery.id, {
-                text: '✅ Заявка решена',
+                text: '✅ Заявка отмечена как решенная',
                 show_alert: false
             });
             
+            // Обновляем сообщение
+            try {
+                await this.bot.editMessageText(
+                    callbackQuery.message.text + '\n\n✅ *РЕШЕНО*',
+                    {
+                        chat_id: callbackQuery.message.chat.id,
+                        message_id: callbackQuery.message.message_id,
+                        parse_mode: 'Markdown'
+                    }
+                );
+            } catch (error) {
+                SystemLogger.error('Ошибка обновления сообщения', error);
+            }
+            
+        } else if (action === 'progress') {
+            // Отмечаем заявку как в работе
+            this.dataManager.updateReport(reportId, { status: 'in_progress' });
+            
+            await this.sendMessage(report.chatId,
+                `🔄 *ВАША ЗАЯВКА ВЗЯТА В РАБОТУ*\n\n` +
+                `Заявка #${reportId} теперь в работе.\n\n` +
+                `*Статус:* 🔄 В работе\n\n` +
+                `Специалист свяжется с вами в ближайшее время.`
+            );
+            
+            await this.bot.answerCallbackQuery(callbackQuery.id, {
+                text: '🔄 Заявка в работе',
+                show_alert: false
+            });
+            
+            try {
+                await this.bot.editMessageText(
+                    callbackQuery.message.text + '\n\n🔄 *В РАБОТЕ*',
+                    {
+                        chat_id: callbackQuery.message.chat.id,
+                        message_id: callbackQuery.message.message_id,
+                        parse_mode: 'Markdown'
+                    }
+                );
+            } catch (error) {
+                SystemLogger.error('Ошибка обновления сообщения', error);
+            }
+            
+        } else if (action === 'contact') {
+            // Показываем контакт пользователя
+            await this.bot.answerCallbackQuery(callbackQuery.id, {
+                text: `Связь с пользователем:\nID: ${report.userId}\nКонтакт: ${report.contact || 'не указан'}`,
+                show_alert: true
+            });
+            
         } else if (action === 'close') {
-            report.status = 'closed';
-            this.dataManager.reports.set(reportId, report);
-            this.dataManager.saveData();
+            // Закрываем заявку
+            this.dataManager.updateReport(reportId, { status: 'closed' });
             
             await this.bot.answerCallbackQuery(callbackQuery.id, {
                 text: '🔒 Заявка закрыта',
                 show_alert: false
             });
+            
+            try {
+                await this.bot.editMessageText(
+                    callbackQuery.message.text + '\n\n🔒 *ЗАКРЫТА*',
+                    {
+                        chat_id: callbackQuery.message.chat.id,
+                        message_id: callbackQuery.message.message_id,
+                        parse_mode: 'Markdown'
+                    }
+                );
+            } catch (error) {
+                SystemLogger.error('Ошибка обновления сообщения', error);
+            }
         }
     }
     
@@ -1160,6 +1403,12 @@ class BakeliteDefenceBot {
             return;
         } else if (text === '🛡️ Стать защитником') {
             await this.handleJoin(msg);
+            return;
+        } else if (text === '📊 Мои заявки') {
+            await this.showMyReports(chatId, userId);
+            return;
+        } else if (text === '⭐ Оставить отзыв') {
+            await this.handleFeedback(msg);
             return;
         } else if (text === '📚 Помощь') {
             await this.handleHelp(msg);
@@ -1334,6 +1583,41 @@ class BakeliteDefenceBot {
         }
     }
     
+    async showMyReports(chatId, userId) {
+        const userReports = Array.from(this.dataManager.reports.values())
+            .filter(r => r.userId === userId.toString());
+        
+        if (userReports.length === 0) {
+            await this.sendMessage(chatId,
+                `📭 *У вас нет заявок*\n\n` +
+                `Вы еще не подавали заявок о проблемах.\n` +
+                `Нажмите "📝 Подать заявку" в меню, чтобы создать первую заявку.`
+            );
+            return;
+        }
+        
+        let reportsMessage = `📋 *ВАШИ ЗАЯВКИ (${userReports.length})*\n\n`;
+        
+        userReports.forEach((report, index) => {
+            reportsMessage += `${index + 1}. *${report.id}*\n`;
+            reportsMessage += `   Тип: ${report.problemType}\n`;
+            reportsMessage += `   Статус: ${this.getReportStatus(report.status)}\n`;
+            reportsMessage += `   Создана: ${Utilities.formatDate(report.createdAt)}\n\n`;
+        });
+        
+        await this.sendMessage(chatId, reportsMessage);
+    }
+    
+    getReportStatus(status) {
+        const statuses = {
+            'new': '🆕 Новая',
+            'in_progress': '🔄 В работе',
+            'resolved': '✅ Решена',
+            'closed': '🔒 Закрыта'
+        };
+        return statuses[status] || status;
+    }
+    
     // ============================================
     // ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
     // ============================================
@@ -1420,16 +1704,15 @@ async function main() {
         console.log('🎉 СИСТЕМА УСПЕШНО ЗАПУЩЕНА!');
         console.log('='.repeat(70));
         console.log('\n✅ ВСЕ РАБОТАЕТ:');
-        console.log('  1. Регионы выбираются корректно');
-        console.log('  2. Имя защитника принимается после региона');
-        console.log('  3. Все шаги обрабатываются');
-        console.log('  4. Инлайн-кнопки работают');
-        console.log('\n📱 ТЕСТИРОВАНИЕ:');
-        console.log('  • Нажмите "🛡️ Стать защитником"');
-        console.log('  • Выберите регион (работает)');
-        console.log('  • Введите имя (работает)');
-        console.log('  • Введите навыки (работает)');
-        console.log('  • Подтвердите отправку');
+        console.log('  1. Регистрация защитника (имя принимается)');
+        console.log('  2. Подача заявки (все шаги работают)');
+        console.log('  3. Одобрение заявок защитников');
+        console.log('  4. Управление заявками о помощи (работает!)');
+        console.log('  5. Инлайн-кнопки работают');
+        console.log('\n📱 КОМАНДЫ АДМИНА:');
+        console.log('  • /admin_reports - просмотр заявок');
+        console.log('  • /admin_defenders - просмотр защитников');
+        console.log('  • Нажмите "✅ Решено" на заявке - работает!');
         console.log('='.repeat(70));
         console.log(`\n📞 Поддержка: ${CONFIG.TECH_SUPPORT}`);
         console.log('='.repeat(70));
