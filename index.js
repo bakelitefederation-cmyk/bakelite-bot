@@ -1,516 +1,45 @@
 // ============================================
-// 🛡️ BAKELITE-BOT v1.0.0
-// Репозиторий: https://github.com/kartochniy/bakelite-bot
-// Хостинг: Railway.com
+// 🛡️ BAKELITE-BOT - МИНИМАЛЬНАЯ РАБОЧАЯ ВЕРСИЯ
 // ============================================
 
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
-const fs = require('fs').promises;
-const path = require('path');
 
-// ============================================
-// КОНФИГУРАЦИЯ
-// ============================================
-
+// Конфигурация
 const CONFIG = {
     BOT_TOKEN: process.env.BOT_TOKEN || '',
     ADMIN_ID: process.env.ADMIN_ID || '',
     VERSION: '1.0.0',
-    
-    // Регионы (фиксированные + "Другое")
-    REGIONS: ['Россия', 'Украина', 'Казахстан', 'Другое'],
-    
-    // Типы киберпреступлений
-    CRIME_TYPES: ['Вымогательство', 'Кибербуллинг', 'Мошенничество', 'Другое'],
-    
-    // Пути для хранения данных
-    DATA_DIR: './data',
-    REPORTS_FILE: './data/reports.json',
-    DEFENDERS_FILE: './data/defenders.json',
-    PENDING_DEFENDERS_FILE: './data/pending_defenders.json'
+    PORT: process.env.PORT || 3000
+};
+
+// Проверка токена
+if (!CONFIG.BOT_TOKEN) {
+    console.error('❌ ОШИБКА: BOT_TOKEN не установлен');
+    console.error('Установите в Railway: BOT_TOKEN=ваш_токен_бота');
+    process.exit(1);
+}
+
+// Создаем бота
+const bot = new TelegramBot(CONFIG.BOT_TOKEN, { polling: true });
+const app = express();
+
+// ============================================
+// ХРАНЕНИЕ ДАННЫХ (В ПАМЯТИ)
+// ============================================
+
+const data = {
+    reports: new Map(),      // reportId -> {userId, region, crimeType, description, status}
+    defenders: new Map(),    // userId -> {pseudonym, region, specialty}
+    pendingDefenders: new Map(), // appId -> {userId, pseudonym, region, specialty}
+    userSessions: new Map()  // userId -> {type, step, data}
 };
 
 // ============================================
-// УТИЛИТЫ
+// КЛАВИАТУРЫ
 // ============================================
 
-// Генерация уникального ID
-function generateId(prefix) {
-    const timestamp = Date.now();
-    const random = Math.random().toString(36).substr(2, 9);
-    return `${prefix}_${timestamp}_${random}`;
-}
-
-// Форматирование даты
-function formatDate(date) {
-    return new Date(date).toLocaleString('ru-RU', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-    });
-}
-
-// ============================================
-// СИСТЕМА ХРАНЕНИЯ ДАННЫХ
-// ============================================
-
-class Storage {
-    constructor() {
-        this.reports = new Map();        // ID заявки -> данные заявки
-        this.defenders = new Map();      // ID пользователя -> данные защитника
-        this.pendingDefenders = new Map(); // ID заявки -> заявка защитника (ожидает одобрения)
-        this.userSessions = new Map();   // ID пользователя -> сессия
-        
-        this.loadData();
-    }
-    
-    // Загрузка данных из файлов
-    async loadData() {
-        try {
-            // Создаем директорию, если её нет
-            await fs.mkdir(CONFIG.DATA_DIR, { recursive: true });
-            
-            // Загрузка заявок
-            try {
-                const reportsData = await fs.readFile(CONFIG.REPORTS_FILE, 'utf8');
-                const reports = JSON.parse(reportsData);
-                reports.forEach(report => {
-                    this.reports.set(report.id, report);
-                });
-                console.log(`Загружено ${reports.length} заявок`);
-            } catch (error) {
-                console.log('Файл заявок не найден, создаем новый');
-                await fs.writeFile(CONFIG.REPORTS_FILE, '[]');
-            }
-            
-            // Загрузка защитников
-            try {
-                const defendersData = await fs.readFile(CONFIG.DEFENDERS_FILE, 'utf8');
-                const defenders = JSON.parse(defendersData);
-                defenders.forEach(defender => {
-                    this.defenders.set(defender.userId, defender);
-                });
-                console.log(`Загружено ${defenders.length} защитников`);
-            } catch (error) {
-                console.log('Файл защитников не найден, создаем новый');
-                await fs.writeFile(CONFIG.DEFENDERS_FILE, '[]');
-            }
-            
-            // Загрузка заявок на защитников
-            try {
-                const pendingData = await fs.readFile(CONFIG.PENDING_DEFENDERS_FILE, 'utf8');
-                const pending = JSON.parse(pendingData);
-                pending.forEach(defender => {
-                    this.pendingDefenders.set(defender.id, defender);
-                });
-                console.log(`Загружено ${pending.length} заявок на защитников`);
-            } catch (error) {
-                console.log('Файл заявок защитников не найден, создаем новый');
-                await fs.writeFile(CONFIG.PENDING_DEFENDERS_FILE, '[]');
-            }
-            
-        } catch (error) {
-            console.error('Ошибка загрузки данных:', error);
-        }
-    }
-    
-    // Сохранение данных в файлы
-    async saveData() {
-        try {
-            // Сохраняем заявки
-            const reportsArray = Array.from(this.reports.values());
-            await fs.writeFile(CONFIG.REPORTS_FILE, JSON.stringify(reportsArray, null, 2));
-            
-            // Сохраняем защитников
-            const defendersArray = Array.from(this.defenders.values());
-            await fs.writeFile(CONFIG.DEFENDERS_FILE, JSON.stringify(defendersArray, null, 2));
-            
-            // Сохраняем заявки на защитников
-            const pendingArray = Array.from(this.pendingDefenders.values());
-            await fs.writeFile(CONFIG.PENDING_DEFENDERS_FILE, JSON.stringify(pendingArray, null, 2));
-            
-            console.log('Данные успешно сохранены');
-        } catch (error) {
-            console.error('Ошибка сохранения данных:', error);
-        }
-    }
-    
-    // Управление сессиями пользователей
-    createSession(userId, type, data = {}) {
-        const session = {
-            id: generateId('session'),
-            userId: userId.toString(),
-            type: type,
-            step: 1,
-            data: data,
-            createdAt: new Date().toISOString()
-        };
-        
-        this.userSessions.set(userId.toString(), session);
-        return session;
-    }
-    
-    getSession(userId) {
-        return this.userSessions.get(userId.toString());
-    }
-    
-    updateSession(userId, updates) {
-        const session = this.getSession(userId);
-        if (session) {
-            Object.assign(session, updates);
-            this.userSessions.set(userId.toString(), session);
-            return true;
-        }
-        return false;
-    }
-    
-    deleteSession(userId) {
-        return this.userSessions.delete(userId.toString());
-    }
-    
-    // Работа с заявками на помощь
-    createReport(data) {
-        const reportId = generateId('report');
-        const report = {
-            id: reportId,
-            userId: data.userId,
-            userName: data.userName,
-            userUsername: data.userUsername,
-            region: data.region,
-            crimeType: data.crimeType,
-            description: data.description,
-            status: 'pending', // pending, in_progress, completed, rejected
-            assignedDefender: null,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-        };
-        
-        this.reports.set(reportId, report);
-        this.saveData();
-        return report;
-    }
-    
-    getReport(reportId) {
-        return this.reports.get(reportId);
-    }
-    
-    updateReport(reportId, updates) {
-        const report = this.getReport(reportId);
-        if (report) {
-            Object.assign(report, updates);
-            report.updatedAt = new Date().toISOString();
-            this.reports.set(reportId, report);
-            this.saveData();
-            return true;
-        }
-        return false;
-    }
-    
-    getUserReports(userId) {
-        return Array.from(this.reports.values())
-            .filter(report => report.userId === userId.toString());
-    }
-    
-    // Работа с защитниками
-    createDefenderApplication(data) {
-        const appId = generateId('def_app');
-        const application = {
-            id: appId,
-            userId: data.userId,
-            userName: data.userName,
-            userUsername: data.userUsername,
-            region: data.region,
-            pseudonym: data.pseudonym,
-            specialty: data.specialty,
-            status: 'pending', // pending, approved, rejected
-            createdAt: new Date().toISOString()
-        };
-        
-        this.pendingDefenders.set(appId, application);
-        this.saveData();
-        return application;
-    }
-    
-    approveDefenderApplication(appId) {
-        const application = this.pendingDefenders.get(appId);
-        if (!application) return false;
-        
-        // Переносим в список одобренных защитников
-        const defender = {
-            userId: application.userId,
-            userName: application.userName,
-            userUsername: application.userUsername,
-            region: application.region,
-            pseudonym: application.pseudonym,
-            specialty: application.specialty,
-            approvedAt: new Date().toISOString(),
-            completedReports: 0,
-            rating: 0
-        };
-        
-        this.defenders.set(application.userId, defender);
-        this.pendingDefenders.delete(appId);
-        this.saveData();
-        return defender;
-    }
-    
-    rejectDefenderApplication(appId) {
-        const application = this.pendingDefenders.get(appId);
-        if (!application) return false;
-        
-        // Просто удаляем заявку
-        this.pendingDefenders.delete(appId);
-        this.saveData();
-        return true;
-    }
-    
-    getDefenderByUserId(userId) {
-        return this.defenders.get(userId.toString());
-    }
-    
-    getDefendersByRegion(region) {
-        return Array.from(this.defenders.values())
-            .filter(defender => defender.region === region);
-    }
-    
-    getAllDefenders() {
-        return Array.from(this.defenders.values());
-    }
-    
-    getPendingApplications() {
-        return Array.from(this.pendingDefenders.values());
-    }
-    
-    // Уведомления
-    async notifyDefendersAboutReport(report) {
-        const defenders = this.getDefendersByRegion(report.region);
-        return defenders;
-    }
-}
-
-// ============================================
-// ТЕКСТЫ СООБЩЕНИЙ
-// ============================================
-
-const Messages = {
-    start: (userName, version) => `
-🛡️ <b>Добро пожаловать в Bakelite Bot v${version}!</b>
-
-👋 Привет, ${userName}! Я - бот помощи жертвам киберпреступлений.
-
-✨ <b>Мои функции:</b>
-• 🛡️ Стать защитником - помогать другим
-• 🆘 Запросить помощь - если вы стали жертвой
-• 📊 Статус заявки - отслеживать ваши обращения
-• 📖 Справка - узнать подробности о функциях
-
-👇 <b>Выберите действие:</b>
-    `,
-    
-    help: () => `
-📖 <b>СПРАВКА ПО КОМАНДАМ</b>
-
-<b>Основные команды:</b>
-/start - Главное меню
-/join - Стать защитником
-/report - Запросить помощь
-/status - Статус моей заявки
-/help - Эта справка
-/menu - Вернуться в меню
-
-<b>Процесс "Стать защитником":</b>
-1️⃣ Выбор региона
-2️⃣ Ввод псевдонима
-3️⃣ Указание специальности
-4️⃣ Отправка заявки на одобрение
-
-<b>Процесс "Запросить помощь":</b>
-1️⃣ Выбор региона
-2️⃣ Выбор типа киберпреступности
-3️⃣ Подробное описание проблемы
-4️⃣ Отправка заявки
-
-<b>Что дальше?</b>
-• Заявки защитников проверяются администратором
-• Заявки о помощи отправляются защитникам региона
-• Защитник свяжется с вами в личных сообщениях
-
-📞 <b>По всем вопросам:</b> Обращайтесь к администратору.
-    `,
-    
-    joinStep1: () => `
-🛡️ <b>СТАТЬ ЗАЩИТНИКОМ</b>
-
-Вы начали процесс регистрации защитника.
-
-<b>Шаг 1/3:</b> Выберите ваш регион:
-    `,
-    
-    joinStep2: () => `
-✅ <b>Регион выбран!</b>
-
-<b>Шаг 2/3:</b> Введите ваш псевдоним (имя, под которым вас будут знать в системе):
-
-<i>Пример: CyberHelper, SecurityPro, ITGuardian</i>
-    `,
-    
-    joinStep3: (pseudonym) => `
-✅ <b>Псевдоним принят: ${pseudonym}</b>
-
-<b>Шаг 3/3:</b> Опишите вашу специальность (кем вы являетесь):
-
-<i>Пример: "Юрист по киберправу", "IT специалист по безопасности", "Психолог, работаю с жертвами кибербуллинга"</i>
-    `,
-    
-    joinConfirmation: (data) => `
-📋 <b>ПОДТВЕРЖДЕНИЕ ЗАЯВКИ</b>
-
-<b>Ваши данные:</b>
-• Регион: ${data.region}
-• Псевдоним: ${data.pseudonym}
-• Специальность: ${data.specialty}
-
-<b>Подтвердите отправку заявки:</b>
-    `,
-    
-    joinSubmitted: (appId) => `
-✅ <b>ЗАЯВКА ОТПРАВЛЕНА!</b>
-
-Ваша заявка #${appId} отправлена на проверку администратору.
-
-<b>Что дальше:</b>
-• Администратор проверит вашу заявку
-• Вы получите уведомление о результате
-• Обычно проверка занимает 1-3 дня
-
-Спасибо за желание помогать! 🛡️
-    `,
-    
-    reportStep1: () => `
-🆘 <b>ЗАПРОС ПОМОЩИ</b>
-
-Вы начали процесс подачи заявки о помощи.
-
-<b>Шаг 1/4:</b> Выберите регион, где произошел инцидент:
-    `,
-    
-    reportStep2: () => `
-✅ <b>Регион выбран!</b>
-
-<b>Шаг 2/4:</b> Выберите вид киберпреступности:
-    `,
-    
-    reportStep3: () => `
-✅ <b>Тип преступления выбран!</b>
-
-<b>Шаг 3/4:</b> Опишите подробно вашу проблему:
-
-<i>Что указать:</i>
-• Что именно произошло?
-• Когда (дата и время)?
-• Какие есть доказательства?
-• Контактные данные для связи
-    `,
-    
-    reportConfirmation: (data) => `
-📋 <b>ПОДТВЕРЖДЕНИЕ ЗАЯВКИ</b>
-
-<b>Ваши данные:</b>
-• Регион: ${data.region}
-• Тип преступления: ${data.crimeType}
-• Описание: ${data.description.substring(0, 100)}${data.description.length > 100 ? '...' : ''}
-
-<b>Подтвердите отправку заявки:</b>
-    `,
-    
-    reportSubmitted: (reportId) => `
-✅ <b>ЗАЯВКА #${reportId} ПРИНЯТА!</b>
-
-Ваша заявка успешно отправлена защитникам региона.
-
-<b>Что дальше:</b>
-• Защитники получили уведомление
-• Первый откликнувшийся возьмет вашу заявку
-• Защитник свяжется с вами в личных сообщениях
-
-<i>Сохраните ID заявки: ${reportId}</i>
-    `,
-    
-    statusEmpty: () => `
-📊 <b>СТАТУС ЗАЯВОК</b>
-
-У вас пока нет заявок о помощи.
-
-Используйте команду /report чтобы создать первую заявку.
-    `,
-    
-    statusList: (reports) => `
-📊 <b>СТАТУС ВАШИХ ЗАЯВОК</b>
-
-<b>Всего заявок:</b> ${reports.length}
-
-${reports.map((report, index) => `
-<b>Заявка #${report.id}</b>
-• Тип: ${report.crimeType}
-• Регион: ${report.region}
-• Статус: ${getStatusText(report.status)}
-• Дата: ${formatDate(report.createdAt)}
-`).join('\n')}
-
-<b>Статусы:</b>
-🟡 Pending - ожидает защитника
-🟠 In Progress - в работе
-🟢 Completed - завершена
-🔴 Rejected - отклонена
-
-<i>Защитник свяжется с вами когда возьмется за работу или завершит её.</i>
-    `,
-    
-    defenderNotification: (report) => `
-🆘 <b>НОВАЯ ЗАЯВКА О ПОМОЩИ</b>
-
-<b>ID заявки:</b> ${report.id}
-<b>Регион:</b> ${report.region}
-<b>Тип:</b> ${report.crimeType}
-<b>Описание:</b> ${report.description.substring(0, 150)}${report.description.length > 150 ? '...' : ''}
-
-👇 <b>Хотите взять эту заявку?</b>
-    `,
-    
-    adminDefenderNotification: (application) => `
-🛡️ <b>НОВАЯ ЗАЯВКА ЗАЩИТНИКА</b>
-
-<b>ID заявки:</b> ${application.id}
-<b>Пользователь:</b> ${application.userName} (@${application.userUsername})
-<b>Регион:</b> ${application.region}
-<b>Псевдоним:</b> ${application.pseudonym}
-<b>Специальность:</b> ${application.specialty}
-<b>Дата:</b> ${formatDate(application.createdAt)}
-
-👇 <b>Одобрить или отклонить?</b>
-    `
-};
-
-// Вспомогательная функция для статусов
-function getStatusText(status) {
-    const statuses = {
-        'pending': '🟡 Ожидает',
-        'in_progress': '🟠 В работе',
-        'completed': '🟢 Завершена',
-        'rejected': '🔴 Отклонена'
-    };
-    return statuses[status] || status;
-}
-
-// ============================================
-## ПРОДОЛЖЕНИЕ - КЛАВИАТУРЫ
-
-// Клавиатуры для бота
 const Keyboards = {
-    // Главное меню
     mainMenu: {
         reply_markup: {
             inline_keyboard: [
@@ -522,8 +51,7 @@ const Keyboards = {
         }
     },
     
-    // Выбор региона
-    regionsMenu: (currentStep, totalSteps) => ({
+    regions: {
         reply_markup: {
             inline_keyboard: [
                 [
@@ -533,14 +61,12 @@ const Keyboards = {
                 [
                     { text: '🇰🇿 Казахстан', callback_data: 'region_kz' },
                     { text: '🌍 Другое', callback_data: 'region_other' }
-                ],
-                Keyboards.navigationButtons(currentStep, totalSteps)
+                ]
             ]
         }
-    }),
+    },
     
-    // Выбор типа преступления
-    crimeTypesMenu: (currentStep, totalSteps) => ({
+    crimeTypes: {
         reply_markup: {
             inline_keyboard: [
                 [
@@ -550,14 +76,12 @@ const Keyboards = {
                 [
                     { text: '💸 Мошенничество', callback_data: 'crime_fraud' },
                     { text: '❓ Другое', callback_data: 'crime_other' }
-                ],
-                Keyboards.navigationButtons(currentStep, totalSteps)
+                ]
             ]
         }
-    }),
+    },
     
-    // Кнопки подтверждения
-    confirmationMenu: {
+    confirm: {
         reply_markup: {
             inline_keyboard: [
                 [
@@ -568,1093 +92,381 @@ const Keyboards = {
         }
     },
     
-    // Кнопки навигации
-    navigationButtons: (currentStep, totalSteps) => {
-        const buttons = [];
-        
-        if (currentStep > 1) {
-            buttons.push({ text: '⬅️ Назад', callback_data: 'nav_back' });
-        }
-        
-        if (currentStep < totalSteps) {
-            buttons.push({ text: 'Продолжить ➡️', callback_data: 'nav_next' });
-        }
-        
-        buttons.push({ text: '📋 Вернуться в меню', callback_data: 'nav_menu' });
-        
-        return buttons;
-    },
-    
-    // Кнопки для защитника (взять/отказаться от заявки)
-    defenderActionMenu: (reportId) => ({
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    { text: '✅ Взять заявку', callback_data: `def_take_${reportId}` },
-                    { text: '❌ Отказаться', callback_data: `def_decline_${reportId}` }
-                ]
-            ]
-        }
-    }),
-    
-    // Кнопки для админа (одобрить/отклонить защитника)
-    adminActionMenu: (appId) => ({
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    { text: '✅ Одобрить', callback_data: `admin_approve_${appId}` },
-                    { text: '❌ Отклонить', callback_data: `admin_reject_${appId}` }
-                ]
-            ]
-        }
-    }),
-    
-    // Просто кнопка "Вернуться в меню"
     backToMenu: {
         reply_markup: {
             inline_keyboard: [
-                [{ text: '📋 Вернуться в меню', callback_data: 'nav_menu' }]
+                [{ text: '📋 Вернуться в меню', callback_data: 'menu_main' }]
             ]
         }
     }
 };
 
 // ============================================
-## ПРОДОЛЖЕНИЕ - ОСНОВНОЙ КЛАСС БОТА
+// КОМАНДА /start
+// ============================================
 
-class BakeliteBot {
-    constructor() {
-        this.bot = null;
-        this.storage = new Storage();
-        this.app = express();
-        
-        this.initializeBot();
-        this.setupWebServer();
-        
-        console.log('🤖 Bakelite Bot инициализирован');
+bot.onText(/\/start/, (msg) => {
+    const chatId = msg.chat.id;
+    const userName = msg.from.first_name || 'Пользователь';
+    
+    const welcomeMessage = `
+🛡️ <b>Добро пожаловать в Bakelite Bot v${CONFIG.VERSION}!</b>
+
+👋 Привет, ${userName}! Я - бот помощи жертвам киберпреступлений.
+
+👇 <b>Выберите действие:</b>
+    `;
+    
+    bot.sendMessage(chatId, welcomeMessage, {
+        parse_mode: 'HTML',
+        ...Keyboards.mainMenu
+    });
+});
+
+// ============================================
+// КОМАНДА /help
+// ============================================
+
+bot.onText(/\/help/, (msg) => {
+    const chatId = msg.chat.id;
+    
+    const helpMessage = `
+📖 <b>СПРАВКА</b>
+
+<b>Основные команды:</b>
+/start - Главное меню
+/join - Стать защитником
+/report - Запросить помощь
+/status - Статус заявок
+/help - Эта справка
+
+<b>Как работает бот:</b>
+1. 🛡️ <b>Защитники</b> регистрируются через /join
+2. 🆘 <b>Жертвы</b> создают заявки через /report
+3. 📋 <b>Админ</b> одобряет защитников
+4. 🔔 <b>Защитники</b> получают уведомления о новых заявках
+5. 💬 <b>Защитник</b> связывается с жертвой напрямую
+    `;
+    
+    bot.sendMessage(chatId, helpMessage, {
+        parse_mode: 'HTML',
+        ...Keyboards.backToMenu
+    });
+});
+
+// ============================================
+## ПРОДОЛЖЕНИЕ - ОБРАБОТКА КОМАНДЫ /join
+
+bot.onText(/\/join/, (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const userName = msg.from.first_name || 'Пользователь';
+    
+    // Проверяем, не является ли уже защитником
+    const existingDefender = data.defenders.get(userId.toString());
+    if (existingDefender) {
+        bot.sendMessage(chatId,
+            `🛡️ <b>Вы уже защитник!</b>\n\n` +
+            `Псевдоним: ${existingDefender.pseudonym}\n` +
+            `Регион: ${existingDefender.region}\n` +
+            `Специальность: ${existingDefender.specialty}`,
+            { parse_mode: 'HTML', ...Keyboards.backToMenu }
+        );
+        return;
     }
     
-    initializeBot() {
-        try {
-            // Проверяем токен
-            if (!CONFIG.BOT_TOKEN) {
-                throw new Error('BOT_TOKEN не установлен. Получите у @BotFather');
-            }
-            
-            // Создаем бота
-            this.bot = new TelegramBot(CONFIG.BOT_TOKEN, {
-                polling: {
-                    interval: 300,
-                    autoStart: true,
-                    params: {
-                        timeout: 10
-                    }
-                }
-            });
-            
-            // Обработка ошибок
-            this.bot.on('polling_error', (error) => {
-                console.error('Polling error:', error.message);
-            });
-            
-            // Регистрируем обработчики
-            this.setupCommandHandlers();
-            this.setupCallbackHandlers();
-            this.setupMessageHandlers();
-            
-            console.log('✅ Бот успешно инициализирован');
-            
-        } catch (error) {
-            console.error('❌ Ошибка инициализации бота:', error);
-            process.exit(1);
-        }
-    }
-    
-    setupCommandHandlers() {
-        // Команда /start
-        this.bot.onText(/^\/start(?:\s|$)/i, (msg) => {
-            const chatId = msg.chat.id;
-            const userId = msg.from.id;
-            const userName = msg.from.first_name || 'Пользователь';
-            
-            console.log(`/start от ${userName} (${userId})`);
-            
-            // Отправляем приветственное сообщение
-            this.bot.sendMessage(chatId, Messages.start(userName, CONFIG.VERSION), {
-                parse_mode: 'HTML',
-                ...Keyboards.mainMenu
-            });
-        });
-        
-        // Команда /join
-        this.bot.onText(/^\/join(?:\s|$)/i, (msg) => {
-            this.handleJoinCommand(msg);
-        });
-        
-        // Команда /report
-        this.bot.onText(/^\/report(?:\s|$)/i, (msg) => {
-            this.handleReportCommand(msg);
-        });
-        
-        // Команда /status
-        this.bot.onText(/^\/status(?:\s|$)/i, (msg) => {
-            this.handleStatusCommand(msg);
-        });
-        
-        // Команда /help
-        this.bot.onText(/^\/help(?:\s|$)/i, (msg) => {
-            const chatId = msg.chat.id;
-            this.bot.sendMessage(chatId, Messages.help(), {
-                parse_mode: 'HTML',
-                ...Keyboards.backToMenu
-            });
-        });
-        
-        // Команда /menu
-        this.bot.onText(/^\/menu(?:\s|$)/i, (msg) => {
-            const chatId = msg.chat.id;
-            const userName = msg.from.first_name || 'Пользователь';
-            
-            this.bot.sendMessage(chatId, Messages.start(userName, CONFIG.VERSION), {
-                parse_mode: 'HTML',
-                ...Keyboards.mainMenu
-            });
-        });
-    }
-    
-    setupCallbackHandlers() {
-        this.bot.on('callback_query', async (callbackQuery) => {
-            const chatId = callbackQuery.message.chat.id;
-            const userId = callbackQuery.from.id;
-            const data = callbackQuery.data;
-            const messageId = callbackQuery.message.message_id;
-            
-            console.log(`Callback от ${userId}: ${data}`);
-            
-            try {
-                // Обработка меню
-                if (data.startsWith('menu_')) {
-                    await this.handleMenuCallback(callbackQuery);
-                }
-                // Обработка выбора региона
-                else if (data.startsWith('region_')) {
-                    await this.handleRegionCallback(callbackQuery);
-                }
-                // Обработка выбора типа преступления
-                else if (data.startsWith('crime_')) {
-                    await this.handleCrimeCallback(callbackQuery);
-                }
-                // Обработка подтверждения
-                else if (data.startsWith('confirm_')) {
-                    await this.handleConfirmationCallback(callbackQuery);
-                }
-                // Обработка навигации
-                else if (data.startsWith('nav_')) {
-                    await this.handleNavigationCallback(callbackQuery);
-                }
-                // Обработка действий защитника
-                else if (data.startsWith('def_')) {
-                    await this.handleDefenderActionCallback(callbackQuery);
-                }
-                // Обработка действий админа
-                else if (data.startsWith('admin_')) {
-                    await this.handleAdminActionCallback(callbackQuery);
-                }
-                
-                // Подтверждаем получение callback
-                await this.bot.answerCallbackQuery(callbackQuery.id);
-                
-            } catch (error) {
-                console.error('Ошибка обработки callback:', error);
-                await this.bot.answerCallbackQuery(callbackQuery.id, {
-                    text: '❌ Произошла ошибка',
-                    show_alert: true
-                });
-            }
-        });
-    }
-    
-    setupMessageHandlers() {
-        this.bot.on('message', async (msg) => {
-            // Пропускаем команды
-            if (msg.text && msg.text.startsWith('/')) {
-                return;
-            }
-            
-            const chatId = msg.chat.id;
-            const userId = msg.from.id;
-            const text = msg.text || '';
-            
-            // Получаем сессию пользователя
-            const session = this.storage.getSession(userId);
-            if (!session) {
-                // Если нет сессии, показываем меню
-                const userName = msg.from.first_name || 'Пользователь';
-                this.bot.sendMessage(chatId, Messages.start(userName, CONFIG.VERSION), {
-                    parse_mode: 'HTML',
-                    ...Keyboards.mainMenu
-                });
-                return;
-            }
-            
-            // Обрабатываем в зависимости от типа сессии
-            if (session.type === 'join') {
-                await this.handleJoinMessage(chatId, userId, text, session);
-            } else if (session.type === 'report') {
-                await this.handleReportMessage(chatId, userId, text, session);
-            }
-        });
-    }
-    
-    setupWebServer() {
-        // Базовый эндпоинт для Railway health checks
-        this.app.get('/', (req, res) => {
-            res.json({
-                status: 'online',
-                bot: 'Bakelite Bot',
-                version: CONFIG.VERSION,
-                uptime: process.uptime()
-            });
-        });
-        
-        // Запускаем сервер на порту, который предоставляет Railway
-        const PORT = process.env.PORT || 3000;
-        this.app.listen(PORT, () => {
-            console.log(`🌐 Веб-сервер запущен на порту ${PORT}`);
-        });
-    }
-    
-    // ============================================
-    // ОБРАБОТЧИКИ КОМАНД
-    // ============================================
-    
-    async handleJoinCommand(msg) {
-        const chatId = msg.chat.id;
-        const userId = msg.from.id;
-        const userName = msg.from.first_name || 'Пользователь';
-        const userUsername = msg.from.username || '';
-        
-        console.log(`/join от ${userName} (${userId})`);
-        
-        // Проверяем, не является ли уже защитником
-        const existingDefender = this.storage.getDefenderByUserId(userId);
-        if (existingDefender) {
-            this.bot.sendMessage(chatId,
-                `🛡️ <b>Вы уже защитник!</b>\n\n` +
-                `Псевдоним: ${existingDefender.pseudonym}\n` +
-                `Регион: ${existingDefender.region}\n` +
-                `Специальность: ${existingDefender.specialty}\n\n` +
-                `Вы можете помогать людям в вашем регионе.`,
-                { parse_mode: 'HTML', ...Keyboards.backToMenu }
-            );
-            return;
-        }
-        
-        // Проверяем, не подавал ли уже заявку
-        const pendingApps = this.storage.getPendingApplications();
-        const existingApp = pendingApps.find(app => app.userId === userId.toString());
-        if (existingApp) {
-            this.bot.sendMessage(chatId,
-                `🔄 <b>Заявка уже на рассмотрении</b>\n\n` +
-                `Ваша заявка #${existingApp.id} ожидает проверки администратором.\n` +
-                `Обычно это занимает 1-3 дня.`,
-                { parse_mode: 'HTML', ...Keyboards.backToMenu }
-            );
-            return;
-        }
-        
-        // Создаем сессию
-        this.storage.createSession(userId, 'join', {
+    // Создаем сессию
+    data.userSessions.set(userId.toString(), {
+        type: 'join',
+        step: 1,
+        data: {
             userName: userName,
-            userUsername: userUsername,
-            step: 1
-        });
-        
-        // Отправляем первый шаг
-        this.bot.sendMessage(chatId, Messages.joinStep1(), {
-            parse_mode: 'HTML',
-            ...Keyboards.regionsMenu(1, 3)
-        });
-    }
+            userUsername: msg.from.username || ''
+        }
+    });
     
-    async handleReportCommand(msg) {
-        const chatId = msg.chat.id;
-        const userId = msg.from.id;
-        const userName = msg.from.first_name || 'Пользователь';
-        const userUsername = msg.from.username || '';
-        
-        console.log(`/report от ${userName} (${userId})`);
-        
-        // Создаем сессию
-        this.storage.createSession(userId, 'report', {
+    // Отправляем первый шаг
+    bot.sendMessage(chatId,
+        `🛡️ <b>СТАТЬ ЗАЩИТНИКОМ</b>\n\n` +
+        `<b>Шаг 1/3:</b> Выберите ваш регион:`,
+        { parse_mode: 'HTML', ...Keyboards.regions }
+    );
+});
+
+// ============================================
+## ПРОДОЛЖЕНИЕ - ОБРАБОТКА КОМАНДЫ /report
+
+bot.onText(/\/report/, (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const userName = msg.from.first_name || 'Пользователь';
+    
+    // Создаем сессию
+    data.userSessions.set(userId.toString(), {
+        type: 'report',
+        step: 1,
+        data: {
             userName: userName,
-            userUsername: userUsername,
-            step: 1
-        });
-        
-        // Отправляем первый шаг
-        this.bot.sendMessage(chatId, Messages.reportStep1(), {
-            parse_mode: 'HTML',
-            ...Keyboards.regionsMenu(1, 4)
-        });
+            userUsername: msg.from.username || ''
+        }
+    });
+    
+    // Отправляем первый шаг
+    bot.sendMessage(chatId,
+        `🆘 <b>ЗАПРОС ПОМОЩИ</b>\n\n` +
+        `<b>Шаг 1/4:</b> Выберите регион, где произошел инцидент:`,
+        { parse_mode: 'HTML', ...Keyboards.regions }
+    );
+});
+
+// ============================================
+## ПРОДОЛЖЕНИЕ - ОБРАБОТКА КОМАНДЫ /status
+
+bot.onText(/\/status/, (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    
+    // Находим все заявки пользователя
+    const userReports = Array.from(data.reports.values())
+        .filter(report => report.userId === userId.toString());
+    
+    if (userReports.length === 0) {
+        bot.sendMessage(chatId,
+            `📊 <b>СТАТУС ЗАЯВОК</b>\n\n` +
+            `У вас пока нет заявок о помощи.\n\n` +
+            `Используйте /report чтобы создать заявку.`,
+            { parse_mode: 'HTML', ...Keyboards.backToMenu }
+        );
+        return;
     }
     
-    async handleStatusCommand(msg) {
-        const chatId = msg.chat.id;
-        const userId = msg.from.id;
+    let statusMessage = `📊 <b>СТАТУС ВАШИХ ЗАЯВОК</b>\n\n`;
+    statusMessage += `<b>Всего заявок:</b> ${userReports.length}\n\n`;
+    
+    userReports.forEach((report, index) => {
+        const statusEmoji = {
+            'pending': '🟡',
+            'in_progress': '🟠',
+            'completed': '🟢',
+            'rejected': '🔴'
+        }[report.status] || '⚪';
         
-        console.log(`/status от ${userId}`);
-        
-        // Получаем заявки пользователя
-        const userReports = this.storage.getUserReports(userId);
-        
-        if (userReports.length === 0) {
-            this.bot.sendMessage(chatId, Messages.statusEmpty(), {
-                parse_mode: 'HTML',
-                ...Keyboards.backToMenu
-            });
-            return;
+        statusMessage += `${index + 1}. ${statusEmoji} <b>Заявка #${report.id}</b>\n`;
+        statusMessage += `   Тип: ${report.crimeType}\n`;
+        statusMessage += `   Статус: ${report.status}\n`;
+        statusMessage += `   Дата: ${new Date(report.createdAt).toLocaleDateString('ru-RU')}\n\n`;
+    });
+    
+    statusMessage += `<i>Защитник свяжется с вами когда возьмется за работу.</i>`;
+    
+    bot.sendMessage(chatId, statusMessage, {
+        parse_mode: 'HTML',
+        ...Keyboards.backToMenu
+    });
+});
+
+// ============================================
+## ПРОДОЛЖЕНИЕ - ОБРАБОТКА CALLBACK-ЗАПРОСОВ
+
+bot.on('callback_query', async (callbackQuery) => {
+    const chatId = callbackQuery.message.chat.id;
+    const userId = callbackQuery.from.id;
+    const data = callbackQuery.data;
+    const messageId = callbackQuery.message.message_id;
+    
+    console.log(`Callback от ${userId}: ${data}`);
+    
+    try {
+        // Обработка меню
+        if (data === 'menu_join') {
+            await bot.answerCallbackQuery(callbackQuery.id);
+            bot.sendMessage(chatId, 'Используйте команду /join', { ...Keyboards.backToMenu });
+        }
+        else if (data === 'menu_report') {
+            await bot.answerCallbackQuery(callbackQuery.id);
+            bot.sendMessage(chatId, 'Используйте команду /report', { ...Keyboards.backToMenu });
+        }
+        else if (data === 'menu_status') {
+            await bot.answerCallbackQuery(callbackQuery.id);
+            bot.sendMessage(chatId, 'Используйте команду /status', { ...Keyboards.backToMenu });
+        }
+        else if (data === 'menu_help') {
+            await bot.answerCallbackQuery(callbackQuery.id);
+            bot.sendMessage(chatId, 'Используйте команду /help', { ...Keyboards.backToMenu });
+        }
+        else if (data === 'menu_main') {
+            await bot.answerCallbackQuery(callbackQuery.id);
+            bot.sendMessage(chatId, 'Возвращаемся в меню...', { ...Keyboards.mainMenu });
         }
         
-        // Группируем по статусам
-        const pendingCount = userReports.filter(r => r.status === 'pending').length;
-        const inProgressCount = userReports.filter(r => r.status === 'in_progress').length;
-        const completedCount = userReports.filter(r => r.status === 'completed').length;
-        const rejectedCount = userReports.filter(r => r.status === 'rejected').length;
+        // Обработка регионов
+        else if (data.startsWith('region_')) {
+            await handleRegionSelection(callbackQuery);
+        }
         
-        let statusMessage = `
-📊 <b>СТАТУС ВАШИХ ЗАЯВОК</b>
-
-<b>Статистика:</b>
-🟡 Ожидают: ${pendingCount}
-🟠 В работе: ${inProgressCount}
-🟢 Завершены: ${completedCount}
-🔴 Отклонены: ${rejectedCount}
-
-<b>Всего заявок:</b> ${userReports.length}
-
-<b>Последние заявки:</b>
-        `;
+        // Обработка типов преступлений
+        else if (data.startsWith('crime_')) {
+            await handleCrimeSelection(callbackQuery);
+        }
         
-        // Показываем последние 5 заявок
-        const recentReports = userReports
-            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-            .slice(0, 5);
+        // Обработка подтверждения
+        else if (data.startsWith('confirm_')) {
+            await handleConfirmation(callbackQuery);
+        }
         
-        recentReports.forEach((report, index) => {
-            statusMessage += `
-${index + 1}. <b>Заявка #${report.id}</b>
-   Тип: ${report.crimeType}
-   Статус: ${getStatusText(report.status)}
-   Дата: ${formatDate(report.createdAt)}
-   ${report.assignedDefender ? `Защитник: ${report.assignedDefender}\n` : ''}
-            `;
-        });
-        
-        statusMessage += `
-<i>Защитник свяжется с вами когда возьмется за работу или завершит её.</i>
-        `;
-        
-        this.bot.sendMessage(chatId, statusMessage, {
-            parse_mode: 'HTML',
-            ...Keyboards.backToMenu
+    } catch (error) {
+        console.error('Ошибка обработки callback:', error);
+        await bot.answerCallbackQuery(callbackQuery.id, {
+            text: '❌ Произошла ошибка',
+            show_alert: true
         });
     }
+});
+
+// ============================================
+## ПРОДОЛЖЕНИЕ - ФУНКЦИИ ОБРАБОТКИ
+
+async function handleRegionSelection(callbackQuery) {
+    const chatId = callbackQuery.message.chat.id;
+    const userId = callbackQuery.from.id;
+    const data = callbackQuery.data;
     
-    // ============================================
-    // ОБРАБОТЧИКИ CALLBACK
-    // ============================================
-    
-    async handleMenuCallback(callbackQuery) {
-        const chatId = callbackQuery.message.chat.id;
-        const userId = callbackQuery.from.id;
-        const data = callbackQuery.data;
-        const userName = callbackQuery.from.first_name || 'Пользователь';
-        
-        switch (data) {
-            case 'menu_join':
-                await this.handleJoinCommand({
-                    chat: { id: chatId },
-                    from: { id: userId, first_name: userName }
-                });
-                break;
-                
-            case 'menu_report':
-                await this.handleReportCommand({
-                    chat: { id: chatId },
-                    from: { id: userId, first_name: userName }
-                });
-                break;
-                
-            case 'menu_status':
-                await this.handleStatusCommand({
-                    chat: { id: chatId },
-                    from: { id: userId }
-                });
-                break;
-                
-            case 'menu_help':
-                this.bot.sendMessage(chatId, Messages.help(), {
-                    parse_mode: 'HTML',
-                    ...Keyboards.backToMenu
-                });
-                break;
-        }
+    const session = data.userSessions.get(userId.toString());
+    if (!session) {
+        await bot.answerCallbackQuery(callbackQuery.id, {
+            text: '❌ Сессия не найдена. Начните заново.',
+            show_alert: true
+        });
+        return;
     }
     
-    async handleRegionCallback(callbackQuery) {
-        const chatId = callbackQuery.message.chat.id;
-        const userId = callbackQuery.from.id;
-        const data = callbackQuery.data;
-        
-        const session = this.storage.getSession(userId);
-        if (!session) return;
-        
-        // Определяем регион
-        let region;
-        switch (data) {
-            case 'region_ru':
-                region = 'Россия';
-                break;
-            case 'region_ua':
-                region = 'Украина';
-                break;
-            case 'region_kz':
-                region = 'Казахстан';
-                break;
-            case 'region_other':
-                region = 'Другое';
-                break;
-            default:
-                region = 'Не указано';
-        }
-        
-        // Сохраняем регион в сессии
-        session.data.region = region;
-        session.step = 2;
-        this.storage.updateSession(userId, session);
-        
-        // Отправляем следующий шаг в зависимости от типа сессии
-        if (session.type === 'join') {
-            this.bot.editMessageText(Messages.joinStep2(), {
+    // Определяем регион
+    let region;
+    switch (data) {
+        case 'region_ru': region = 'Россия'; break;
+        case 'region_ua': region = 'Украина'; break;
+        case 'region_kz': region = 'Казахстан'; break;
+        case 'region_other': region = 'Другое'; break;
+        default: region = 'Не указано';
+    }
+    
+    // Сохраняем в сессии
+    session.data.region = region;
+    session.step = 2;
+    data.userSessions.set(userId.toString(), session);
+    
+    // Отправляем следующий шаг
+    if (session.type === 'join') {
+        bot.editMessageText(
+            `✅ <b>Регион: ${region}</b>\n\n` +
+            `<b>Шаг 2/3:</b> Введите ваш псевдоним (имя в системе):\n\n` +
+            `<i>Пример: CyberHelper, SecurityGuard, ITProtector</i>`,
+            {
                 chat_id: chatId,
                 message_id: callbackQuery.message.message_id,
                 parse_mode: 'HTML'
-            });
-        } else if (session.type === 'report') {
-            this.bot.editMessageText(Messages.reportStep2(), {
+            }
+        );
+    } else if (session.type === 'report') {
+        bot.editMessageText(
+            `✅ <b>Регион: ${region}</b>\n\n` +
+            `<b>Шаг 2/4:</b> Выберите тип киберпреступности:`,
+            {
                 chat_id: chatId,
                 message_id: callbackQuery.message.message_id,
                 parse_mode: 'HTML',
-                ...Keyboards.crimeTypesMenu(2, 4)
-            });
-        }
+                ...Keyboards.crimeTypes
+            }
+        );
     }
     
-    async handleCrimeCallback(callbackQuery) {
-        const chatId = callbackQuery.message.chat.id;
-        const userId = callbackQuery.from.id;
-        const data = callbackQuery.data;
-        
-        const session = this.storage.getSession(userId);
-        if (!session || session.type !== 'report') return;
-        
-        // Определяем тип преступления
-        let crimeType;
-        switch (data) {
-            case 'crime_extortion':
-                crimeType = 'Вымогательство';
-                break;
-            case 'crime_bullying':
-                crimeType = 'Кибербуллинг';
-                break;
-            case 'crime_fraud':
-                crimeType = 'Мошенничество';
-                break;
-            case 'crime_other':
-                crimeType = 'Другое';
-                break;
-            default:
-                crimeType = 'Не указано';
+    await bot.answerCallbackQuery(callbackQuery.id);
+}
+
+// ============================================
+## ПРОДОЛЖЕНИЕ - ОБРАБОТКА ТЕКСТОВЫХ СООБЩЕНИЙ
+
+bot.on('message', (msg) => {
+    // Пропускаем команды
+    if (msg.text && msg.text.startsWith('/')) return;
+    
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const text = msg.text || '';
+    
+    const session = data.userSessions.get(userId.toString());
+    if (!session) return;
+    
+    // Обработка сообщений для регистрации защитника
+    if (session.type === 'join' && session.step === 2) {
+        // Шаг 2: Получение псевдонима
+        if (text.length < 2 || text.length > 50) {
+            bot.sendMessage(chatId,
+                '❌ Псевдоним должен быть от 2 до 50 символов.\nПопробуйте еще раз:'
+            );
+            return;
         }
         
-        // Сохраняем тип преступления в сессии
-        session.data.crimeType = crimeType;
+        session.data.pseudonym = text;
         session.step = 3;
-        this.storage.updateSession(userId, session);
+        data.userSessions.set(userId.toString(), session);
         
-        // Отправляем следующий шаг
-        this.bot.editMessageText(Messages.reportStep3(), {
-            chat_id: chatId,
-            message_id: callbackQuery.message.message_id,
-            parse_mode: 'HTML'
-        });
+        bot.sendMessage(chatId,
+            `✅ <b>Псевдоним: ${text}</b>\n\n` +
+            `<b>Шаг 3/3:</b> Опишите вашу специальность:\n\n` +
+            `<i>Пример: "Юрист по киберправу", "IT-специалист по безопасности", "Психолог"</i>`,
+            { parse_mode: 'HTML' }
+        );
     }
-    
-    async handleConfirmationCallback(callbackQuery) {
-        const chatId = callbackQuery.message.chat.id;
-        const userId = callbackQuery.from.id;
-        const data = callbackQuery.data;
-        
-        const session = this.storage.getSession(userId);
-        if (!session) return;
-        
-        if (data === 'confirm_yes') {
-            if (session.type === 'join') {
-                // Создаем заявку защитника
-                const application = this.storage.createDefenderApplication({
-                    userId: userId.toString(),
-                    userName: session.data.userName,
-                    userUsername: session.data.userUsername,
-                    region: session.data.region,
-                    pseudonym: session.data.pseudonym,
-                    specialty: session.data.specialty
-                });
-                
-                // Уведомляем пользователя
-                this.bot.editMessageText(Messages.joinSubmitted(application.id), {
-                    chat_id: chatId,
-                    message_id: callbackQuery.message.message_id,
-                    parse_mode: 'HTML',
-                    ...Keyboards.backToMenu
-                });
-                
-                // Уведомляем админа
-                await this.notifyAdminAboutDefenderApplication(application);
-                
-                // Удаляем сессию
-                this.storage.deleteSession(userId);
-                
-            } else if (session.type === 'report') {
-                // Создаем заявку о помощи
-                const report = this.storage.createReport({
-                    userId: userId.toString(),
-                    userName: session.data.userName,
-                    userUsername: session.data.userUsername,
-                    region: session.data.region,
-                    crimeType: session.data.crimeType,
-                    description: session.data.description
-                });
-                
-                // Уведомляем пользователя
-                this.bot.editMessageText(Messages.reportSubmitted(report.id), {
-                    chat_id: chatId,
-                    message_id: callbackQuery.message.message_id,
-                    parse_mode: 'HTML',
-                    ...Keyboards.backToMenu
-                });
-                
-                // Уведомляем защитников
-                await this.notifyDefendersAboutReport(report);
-                
-                // Удаляем сессию
-                this.storage.deleteSession(userId);
-            }
-            
-        } else if (data === 'confirm_no') {
-            // Отмена
-            const userName = callbackQuery.from.first_name || 'Пользователь';
-            
-            this.bot.editMessageText(`❌ Действие отменено.\n\n${Messages.start(userName, CONFIG.VERSION)}`, {
-                chat_id: chatId,
-                message_id: callbackQuery.message.message_id,
-                parse_mode: 'HTML',
-                ...Keyboards.mainMenu
-            });
-            
-            // Удаляем сессию
-            this.storage.deleteSession(userId);
-        }
-    }
-    
-    async handleNavigationCallback(callbackQuery) {
-        const chatId = callbackQuery.message.chat.id;
-        const userId = callbackQuery.from.id;
-        const data = callbackQuery.data;
-        
-        const session = this.storage.getSession(userId);
-        if (!session) return;
-        
-        if (data === 'nav_menu') {
-            // Возврат в меню
-            const userName = callbackQuery.from.first_name || 'Пользователь';
-            
-            this.bot.editMessageText(Messages.start(userName, CONFIG.VERSION), {
-                chat_id: chatId,
-                message_id: callbackQuery.message.message_id,
-                parse_mode: 'HTML',
-                ...Keyboards.mainMenu
-            });
-            
-            // Удаляем сессию
-            this.storage.deleteSession(userId);
-            
-        } else if (data === 'nav_back') {
-            // Назад
-            session.step = Math.max(1, session.step - 1);
-            this.storage.updateSession(userId, session);
-            
-            // Показываем предыдущий шаг
-            await this.showCurrentStep(chatId, userId, callbackQuery.message.message_id, session);
-            
-        } else if (data === 'nav_next') {
-            // Вперед (только если текущий шаг заполнен)
-            const canProceed = await this.validateCurrentStep(session);
-            if (canProceed) {
-                session.step += 1;
-                this.storage.updateSession(userId, session);
-                
-                // Показываем следующий шаг
-                await this.showCurrentStep(chatId, userId, callbackQuery.message.message_id, session);
-            } else {
-                // Показываем ошибку
-                await this.bot.answerCallbackQuery(callbackQuery.id, {
-                    text: '⚠️ Заполните текущее поле',
-                    show_alert: true
-                });
-            }
-        }
-    }
-    
-    async handleDefenderActionCallback(callbackQuery) {
-        const chatId = callbackQuery.message.chat.id;
-        const userId = callbackQuery.from.id;
-        const data = callbackQuery.data;
-        
-        // Проверяем, является ли пользователь защитником
-        const defender = this.storage.getDefenderByUserId(userId);
-        if (!defender) {
-            await this.bot.answerCallbackQuery(callbackQuery.id, {
-                text: '❌ Вы не являетесь защитником',
-                show_alert: true
-            });
+    else if (session.type === 'join' && session.step === 3) {
+        // Шаг 3: Получение специальности
+        if (text.length < 5) {
+            bot.sendMessage(chatId,
+                '❌ Опишите специальность подробнее (минимум 5 символов).\nПопробуйте еще раз:'
+            );
             return;
         }
         
-        const parts = data.split('_');
-        const action = parts[1]; // take или decline
-        const reportId = parts[2];
+        session.data.specialty = text;
+        session.step = 4; // Подтверждение
+        data.userSessions.set(userId.toString(), session);
         
-        const report = this.storage.getReport(reportId);
-        if (!report) {
-            await this.bot.answerCallbackQuery(callbackQuery.id, {
-                text: '❌ Заявка не найдена',
-                show_alert: true
-            });
-            return;
-        }
-        
-        if (action === 'take') {
-            // Защитник берет заявку
-            this.storage.updateReport(reportId, {
-                status: 'in_progress',
-                assignedDefender: defender.pseudonym,
-                updatedAt: new Date().toISOString()
-            });
-            
-            // Уведомляем жертву
-            await this.notifyVictimAboutDefender(report, defender);
-            
-            // Обновляем сообщение
-            this.bot.editMessageText(
-                `✅ <b>Вы взяли заявку #${reportId}</b>\n\n` +
-                `Свяжитесь с пользователем и помогите решить проблему.\n` +
-                `Когда работа будет завершена, уведомите пользователя в личных сообщениях.`,
-                {
-                    chat_id: chatId,
-                    message_id: callbackQuery.message.message_id,
-                    parse_mode: 'HTML'
-                }
-            );
-            
-            await this.bot.answerCallbackQuery(callbackQuery.id, {
-                text: '✅ Заявка принята! Свяжитесь с пользователем.',
-                show_alert: true
-            });
-            
-        } else if (action === 'decline') {
-            // Защитник отказывается от заявки
-            this.bot.editMessageText(
-                `❌ <b>Вы отказались от заявки #${reportId}</b>\n\n` +
-                `Заявка будет предложена другим защитникам.`,
-                {
-                    chat_id: chatId,
-                    message_id: callbackQuery.message.message_id,
-                    parse_mode: 'HTML'
-                }
-            );
-            
-            await this.bot.answerCallbackQuery(callbackQuery.id, {
-                text: 'Заявка отклонена',
-                show_alert: false
-            });
-        }
+        bot.sendMessage(chatId,
+            `📋 <b>ПОДТВЕРЖДЕНИЕ ЗАЯВКИ</b>\n\n` +
+            `<b>Ваши данные:</b>\n` +
+            `• Регион: ${session.data.region}\n` +
+            `• Псевдоним: ${session.data.pseudonym}\n` +
+            `• Специальность: ${session.data.specialty}\n\n` +
+            `<b>Подтвердите отправку:</b>`,
+            { parse_mode: 'HTML', ...Keyboards.confirm }
+        );
     }
-    
-    async handleAdminActionCallback(callbackQuery) {
-        const chatId = callbackQuery.message.chat.id;
-        const userId = callbackQuery.from.id;
-        const data = callbackQuery.data;
-        
-        // Проверяем, является ли пользователь админом
-        if (userId.toString() !== CONFIG.ADMIN_ID) {
-            await this.bot.answerCallbackQuery(callbackQuery.id, {
-                text: '❌ Только администратор',
-                show_alert: true
-            });
-            return;
-        }
-        
-        const parts = data.split('_');
-        const action = parts[1]; // approve или reject
-        const appId = parts[2];
-        
-        if (action === 'approve') {
-            // Одобряем заявку защитника
-            const defender = this.storage.approveDefenderApplication(appId);
-            if (defender) {
-                // Уведомляем нового защитника
-                await this.notifyDefenderAboutApproval(defender);
-                
-                // Обновляем сообщение
-                this.bot.editMessageText(
-                    `✅ <b>Заявка защитника одобрена!</b>\n\n` +
-                    `Псевдоним: ${defender.pseudonym}\n` +
-                    `Регион: ${defender.region}\n` +
-                    `Специальность: ${defender.specialty}`,
-                    {
-                        chat_id: chatId,
-                        message_id: callbackQuery.message.message_id,
-                        parse_mode: 'HTML'
-                    }
-                );
-                
-                await this.bot.answerCallbackQuery(callbackQuery.id, {
-                    text: '✅ Защитник одобрен',
-                    show_alert: false
-                });
-            }
-            
-        } else if (action === 'reject') {
-            // Отклоняем заявку защитника
-            const success = this.storage.rejectDefenderApplication(appId);
-            if (success) {
-                // Обновляем сообщение
-                this.bot.editMessageText(
-                    `❌ <b>Заявка защитника отклонена</b>`,
-                    {
-                        chat_id: chatId,
-                        message_id: callbackQuery.message.message_id,
-                        parse_mode: 'HTML'
-                    }
-                );
-                
-                await this.bot.answerCallbackQuery(callbackQuery.id, {
-                    text: '❌ Заявка отклонена',
-                    show_alert: false
-                });
-            }
-        }
-    }
-    
-    // ============================================
-    ## ПРОДОЛЖЕНИЕ - ОБРАБОТЧИКИ СООБЩЕНИЙ
-
-    async handleJoinMessage(chatId, userId, text, session) {
-        if (session.step === 2) {
-            // Шаг 2: Псевдоним
-            if (text.length < 2 || text.length > 50) {
-                this.bot.sendMessage(chatId,
-                    '❌ Псевдоним должен быть от 2 до 50 символов.\n\nПопробуйте еще раз:'
-                );
-                return;
-            }
-            
-            session.data.pseudonym = text;
-            session.step = 3;
-            this.storage.updateSession(userId, session);
-            
-            this.bot.sendMessage(chatId, Messages.joinStep3(text), {
-                parse_mode: 'HTML'
-            });
-            
-        } else if (session.step === 3) {
-            // Шаг 3: Специальность
-            if (text.length < 10) {
-                this.bot.sendMessage(chatId,
-                    '❌ Пожалуйста, опишите вашу специальность подробнее (минимум 10 символов).\n\nПопробуйте еще раз:'
-                );
-                return;
-            }
-            
-            session.data.specialty = text;
-            session.step = 4; // Шаг подтверждения
-            this.storage.updateSession(userId, session);
-            
-            this.bot.sendMessage(chatId, Messages.joinConfirmation(session.data), {
-                parse_mode: 'HTML',
-                ...Keyboards.confirmationMenu
-            });
-        }
-    }
-    
-    async handleReportMessage(chatId, userId, text, session) {
-        if (session.step === 3) {
-            // Шаг 3: Описание проблемы
-            if (text.length < 50) {
-                this.bot.sendMessage(chatId,
-                    '❌ Пожалуйста, опишите проблему подробнее (минимум 50 символов).\n\nЧто произошло, когда, какие есть доказательства?'
-                );
-                return;
-            }
-            
-            session.data.description = text;
-            session.step = 4; // Шаг подтверждения
-            this.storage.updateSession(userId, session);
-            
-            this.bot.sendMessage(chatId, Messages.reportConfirmation(session.data), {
-                parse_mode: 'HTML',
-                ...Keyboards.confirmationMenu
-            });
-            
-        } else if (session.step === 2 && session.data.crimeType === 'Другое') {
-            // Если выбрано "Другое" на шаге 2
-            if (text.length < 5) {
-                this.bot.sendMessage(chatId,
-                    '❌ Пожалуйста, укажите вид киберпреступности (минимум 5 символов).'
-                );
-                return;
-            }
-            
-            session.data.crimeType = text;
-            session.step = 3;
-            this.storage.updateSession(userId, session);
-            
-            this.bot.sendMessage(chatId, Messages.reportStep3(), {
-                parse_mode: 'HTML'
-            });
-            
-        } else if (session.step === 1 && session.data.region === 'Другое') {
-            // Если выбрано "Другое" на шаге 1
-            if (text.length < 3) {
-                this.bot.sendMessage(chatId,
-                    '❌ Пожалуйста, укажите страну (минимум 3 символа).'
-                );
-                return;
-            }
-            
-            session.data.region = text;
-            session.step = 2;
-            this.storage.updateSession(userId, session);
-            
-            this.bot.sendMessage(chatId, Messages.reportStep2(), {
-                parse_mode: 'HTML',
-                ...Keyboards.crimeTypesMenu(2, 4)
-            });
-        }
-    }
-    
-    // ============================================
-    // ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
-    // ============================================
-    
-    async showCurrentStep(chatId, userId, messageId, session) {
-        if (session.type === 'join') {
-            switch (session.step) {
-                case 1:
-                    this.bot.editMessageText(Messages.joinStep1(), {
-                        chat_id: chatId,
-                        message_id: messageId,
-                        parse_mode: 'HTML',
-                        ...Keyboards.regionsMenu(1, 3)
-                    });
-                    break;
-                case 2:
-                    this.bot.editMessageText(Messages.joinStep2(), {
-                        chat_id: chatId,
-                        message_id: messageId,
-                        parse_mode: 'HTML'
-                    });
-                    break;
-                case 3:
-                    this.bot.editMessageText(Messages.joinStep3(session.data.pseudonym || ''), {
-                        chat_id: chatId,
-                        message_id: messageId,
-                        parse_mode: 'HTML'
-                    });
-                    break;
-            }
-        } else if (session.type === 'report') {
-            switch (session.step) {
-                case 1:
-                    this.bot.editMessageText(Messages.reportStep1(), {
-                        chat_id: chatId,
-                        message_id: messageId,
-                        parse_mode: 'HTML',
-                        ...Keyboards.regionsMenu(1, 4)
-                    });
-                    break;
-                case 2:
-                    this.bot.editMessageText(Messages.reportStep2(), {
-                        chat_id: chatId,
-                        message_id: messageId,
-                        parse_mode: 'HTML',
-                        ...Keyboards.crimeTypesMenu(2, 4)
-                    });
-                    break;
-                case 3:
-                    this.bot.editMessageText(Messages.reportStep3(), {
-                        chat_id: chatId,
-                        message_id: messageId,
-                        parse_mode: 'HTML'
-                    });
-                    break;
-            }
-        }
-    }
-    
-    async validateCurrentStep(session) {
-        if (session.type === 'join') {
-            switch (session.step) {
-                case 2:
-                    return !!session.data.pseudonym && session.data.pseudonym.length >= 2;
-                case 3:
-                    return !!session.data.specialty && session.data.specialty.length >= 10;
-            }
-        } else if (session.type === 'report') {
-            switch (session.step) {
-                case 3:
-                    return !!session.data.description && session.data.description.length >= 50;
-            }
-        }
-        return true;
-    }
-    
-    // ============================================
-    // УВЕДОМЛЕНИЯ
-    // ============================================
-    
-    async notifyAdminAboutDefenderApplication(application) {
-        if (!CONFIG.ADMIN_ID) {
-            console.warn('ADMIN_ID не установлен, уведомления админу не отправляются');
-            return;
-        }
-        
-        try {
-            await this.bot.sendMessage(CONFIG.ADMIN_ID, Messages.adminDefenderNotification(application), {
-                parse_mode: 'HTML',
-                ...Keyboards.adminActionMenu(application.id)
-            });
-            console.log(`Уведомление отправлено админу о заявке защитника #${application.id}`);
-        } catch (error) {
-            console.error('Ошибка отправки уведомления админу:', error);
-        }
-    }
-    
-    async notifyDefendersAboutReport(report) {
-        try {
-            // Получаем защитников региона
-            const defenders = this.storage.getDefendersByRegion(report.region);
-            
-            if (defenders.length === 0) {
-                console.log(`Нет защитников в регионе ${report.region} для заявки #${report.id}`);
-                return;
-            }
-            
-            console.log(`Отправляем уведомление ${defenders.length} защитникам о заявке #${report.id}`);
-            
-            // Отправляем уведомление каждому защитнику
-            for (const defender of defenders) {
-                try {
-                    await this.bot.sendMessage(defender.userId, Messages.defenderNotification(report), {
-                        parse_mode: 'HTML',
-                        ...Keyboards.defenderActionMenu(report.id)
-                    });
-                } catch (error) {
-                    // Если защитник заблокировал бота, пропускаем
-                    if (error.response && error.response.statusCode === 403) {
-                        console.log(`Защитник ${defender.userId} заблокировал бота`);
-                        continue;
-                    }
-                    console.error(`Ошибка отправки защитнику ${defender.userId}:`, error.message);
-                }
-                
-                // Небольшая задержка между сообщениями
-                await new Promise(resolve => setTimeout(resolve, 100));
-            }
-            
-        } catch (error) {
-            console.error('Ошибка уведомления защитников:', error);
-        }
-    }
-    
-    async notifyVictimAboutDefender(report, defender) {
-        try {
-            await this.bot.sendMessage(report.userId,
-                `🛡️ <b>Защитник назначен на вашу заявку!</b>\n\n` +
-                `Ваша заявка #${report.id} взята в работу защитником.\n\n` +
-                `<b>Защитник:</b> ${defender.pseudonym}\n` +
-                `<b>Специальность:</b> ${defender.specialty}\n\n` +
-                `Защитник свяжется с вами в ближайшее время для оказания помощи.`,
-                { parse_mode: 'HTML' }
-            );
-            console.log(`Уведомление отправлено жертве ${report.userId} о защитнике`);
-        } catch (error) {
-            console.error('Ошибка отправки уведомления жертве:', error);
-        }
-    }
-    
-    async notifyDefenderAboutApproval(defender) {
-        try {
-            await this.bot.sendMessage(defender.userId,
-                `🎉 <b>Поздравляем! Вы стали защитником!</b>\n\n` +
-                `Ваша заявка на защитника была одобрена администратором.\n\n` +
-                `<b>Ваши данные:</b>\n` +
-                `• Псевдоним: ${defender.pseudonym}\n` +
-                `• Регион: ${defender.region}\n` +
-                `• Специальность: ${defender.specialty}\n\n` +
-                `Теперь вы будете получать уведомления о новых заявках в вашем регионе.\n` +
-                `Спасибо за готовность помогать людям! 🛡️`,
-                { parse_mode: 'HTML' }
-            );
-            console.log(`Уведомление отправлено новому защитнику ${defender.userId}`);
-        } catch (error) {
-            console.error('Ошибка отправки уведомления защитнику:', error);
-        }
-    }
-    
-    // ============================================
-    // ЗАПУСК БОТА
-    // ============================================
-    
-    start() {
-        console.log('🚀 Bakelite Bot запущен!');
-        console.log('🤖 Версия:', CONFIG.VERSION);
-        console.log('👑 Админ ID:', CONFIG.ADMIN_ID || 'не установлен');
-        console.log('📁 Данные хранятся в:', CONFIG.DATA_DIR);
-        console.log('=======================================');
-    }
-}
+});
 
 // ============================================
-// ЗАПУСК СИСТЕМЫ
-// ============================================
+## ПРОДОЛЖЕНИЕ - ВЕБ-СЕРВЕР ДЛЯ RAILWAY
 
-// Проверка обязательных переменных
-if (!CONFIG.BOT_TOKEN) {
-    console.error('❌ ОШИБКА: BOT_TOKEN не установлен');
-    console.error('Получите у @BotFather и установите в переменные окружения:');
-    console.error('BOT_TOKEN=ваш_токен_бота');
-    process.exit(1);
-}
+app.get('/', (req, res) => {
+    res.json({
+        status: 'online',
+        bot: 'Bakelite Bot',
+        version: CONFIG.VERSION,
+        uptime: process.uptime(),
+        reports: data.reports.size,
+        defenders: data.defenders.size,
+        users: data.userSessions.size
+    });
+});
 
-if (!CONFIG.ADMIN_ID) {
-    console.warn('⚠️  ВНИМАНИЕ: ADMIN_ID не установлен');
-    console.warn('Уведомления админу не будут отправляться');
-    console.warn('Узнайте ваш ID через @userinfobot и установите:');
-    console.warn('ADMIN_ID=ваш_id_админа');
-}
-
-// Запускаем бота
-const bot = new BakeliteBot();
-bot.start();
+// Запускаем сервер
+app.listen(CONFIG.PORT, () => {
+    console.log('🚀 Bakelite Bot запущен!');
+    console.log('🤖 Версия:', CONFIG.VERSION);
+    console.log('🌐 Порт:', CONFIG.PORT);
+    console.log('📊 Данные в памяти:', {
+        reports: data.reports.size,
+        defenders: data.defenders.size,
+        sessions: data.userSessions.size
+    });
+    console.log('=======================================');
+});
