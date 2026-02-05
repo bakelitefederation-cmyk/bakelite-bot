@@ -1,42 +1,43 @@
 // ============================================
-// 🛡️ BAKELITE BOT v3.1 - ПОЛНАЯ РЕАЛИЗАЦИЯ 🚀
+// 🛡️ BAKELITE BOT — Полный рабочий код
 // ============================================
 
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 
-console.log('🚀 Загружаем Bakelite Bot...');
+console.log('🚀 Запуск Bakelite Bot...');
 
-// ================= КОНФИГУРАЦИЯ =================
+// ================== КОНФИГУРАЦИЯ ==================
+
 const CONFIG = {
     BOT_TOKEN: process.env.BOT_TOKEN || '',
     ADMIN_ID: parseInt(process.env.ADMIN_ID) || null,
-    VERSION: '3.1.0',
-    PORT: process.env.PORT || 3000,
-    NODE_ENV: process.env.NODE_ENV || 'development'
+    VERSION: '3.2.0',
+    NODE_ENV: process.env.NODE_ENV || 'development',
+    PORT: process.env.PORT || 3000
 };
 
 if (!CONFIG.BOT_TOKEN) {
-    console.error('❌ ERROR: BOT_TOKEN is missing!');
+    console.error('❌ BOT_TOKEN отсутствует!');
     process.exit(1);
 }
 
-// ================= ДАННЫЕ =================
-const data = {
+// ================== ХРАНЕНИЕ ДАННЫХ ==================
+
+const dataStore = {
     defenders: new Map(),
     reports: new Map(),
     sessions: new Map(),
-    states: new Map()
+    states: new Map(),
 };
 
-let reportIndex = 1;
+let reportCount = 0;
 
-// ================= ИНИЦИАЛИЗАЦИЯ =================
-const botOptions = {
+// ================== ИНИЦИАЛИЗАЦИЯ БОТА ==================
+
+const bot = new TelegramBot(CONFIG.BOT_TOKEN, {
     polling: CONFIG.NODE_ENV !== 'production'
-};
-
-const bot = new TelegramBot(CONFIG.BOT_TOKEN, botOptions);
+});
 
 if (CONFIG.NODE_ENV === 'production') {
     const app = express();
@@ -47,276 +48,104 @@ if (CONFIG.NODE_ENV === 'production') {
         res.sendStatus(200);
     });
 
-    app.listen(CONFIG.PORT, () =>
-        console.log(`🚀 Server listening on port ${CONFIG.PORT}`)
-    );
+    app.listen(CONFIG.PORT, () => {
+        console.log(`🌐 Сервер запущен на порту ${CONFIG.PORT}`);
+    });
 
-    const webhookUrl = process.env.RAILWAY_PUBLIC_DOMAIN
-        ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/bot${CONFIG.BOT_TOKEN}`
-        : process.env.WEBHOOK_URL;
+    const webhookURL = process.env.RAILWAY_PUBLIC_DOMAIN ?
+        `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/bot${CONFIG.BOT_TOKEN}` :
+        process.env.WEBHOOK_URL;
 
-    if (webhookUrl) {
-        bot.setWebHook(`${webhookUrl}`).catch(console.error);
+    if (webhookURL) {
+        bot.setWebHook(webhookURL).catch(console.error);
     }
 }
 
-// ================= УТИЛИТЫ =================
-function genReportId() {
-    return `R-${Date.now()}-${reportIndex++}`;
+bot.on('polling_error', console.error);
+bot.on('webhook_error', console.error);
+
+console.log('🤖 Бот инициализирован');
+
+// ================== УТИЛИТЫ ==================
+
+function createReportId() {
+    return `R-${Date.now()}-${++reportCount}`;
 }
 
-function clearSession(userId) {
-    data.sessions.delete(userId.toString());
-    data.states.delete(userId.toString());
+function clearUserSession(userId) {
+    dataStore.sessions.delete(userId.toString());
+    dataStore.states.delete(userId.toString());
 }
 
-// ================= /start =================
+function getStatusIcon(status) {
+    const icons = {
+        pending: '🟡',
+        in_progress: '🟠',
+        completed: '🟢',
+        rejected: '🔴'
+    };
+    return icons[status] || '⚪';
+}
+
+// ================== /start ==================
+
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
-    clearSession(msg.from.id);
 
-    const menu = {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: '🛡️ Стать защитником', callback_data: 'join_start' }],
-                [{ text: '🆘 Запросить помощь', callback_data: 'report_start' }],
-                [{ text: '📊 Статус заявки', callback_data: 'status_show' }],
-                [{ text: '📖 Справка', callback_data: 'show_help' }]
-            ]
-        },
-        parse_mode: 'HTML'
-    };
+    clearUserSession(msg.from.id);
 
     await bot.sendMessage(chatId,
-        `🛡️ <b>Добро пожаловать!</b>\n` +
-        `Выберите действие ниже:`,
-        menu
+        `🛡️ <b>Bakelite Bot v${CONFIG.VERSION}</b>\nВыберите действие:`,
+        {
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🛡️ Стать защитником', callback_data: 'JOIN_START' }],
+                    [{ text: '🆘 Запросить помощь', callback_data: 'REPORT_START' }],
+                    [{ text: '📊 Статус заявки', callback_data: 'STATUS_SHOW' }],
+                    [{ text: '📖 Справка', callback_data: 'SHOW_HELP' }]
+                ]
+            }
+        }
     );
 });
 
-// ================= HELP =================
-async function showHelp(chatId, messageId) {
-    const text = `
-📖 <b>СПРАВКА:</b>
+// ================== CALLBACK_QUERY ==================
 
-🛡️ Стать защитником — Регистрация для помощи другим.
-🆘 Запросить помощь — Сообщение о случившемся.
-📊 Статус заявки — Просмотр прогресса.
-📖 Справка — Эта страница.
+bot.on('callback_query', async (query) => {
+    await bot.answerCallbackQuery(query.id);
 
-Используйте кнопки на экране. /start — Главное меню.
-    `;
-    await bot.editMessageText(text, {
-        chat_id: chatId,
-        message_id: messageId,
-        parse_mode: 'HTML',
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: '📋 Вернуться в меню', callback_data: 'main_menu' }]
-            ]
-        }
-    });
-}
-
-// ================= Статус =================
-async function showStatus(chatId, userId, messageId) {
-    let owned = [], assigned = [];
-    data.reports.forEach(r => {
-        if (r.userId === userId.toString()) owned.push(r);
-        if (r.assignedTo === userId.toString()) assigned.push(r);
-    });
-
-    let text;
-    if (!owned.length && !assigned.length) {
-        text = `📊 У вас нет заявок.`;
-    } else {
-        text = `<b>📊 Статус ваших заявок</b>\n\n`;
-        owned.forEach(r => {
-            text += `• ${r.id} — ${r.status}\n`;
-        });
-        assigned.forEach(r => {
-            text += `• (Assigned) ${r.id} — ${r.status}\n`;
-        });
-    }
-
-    await bot.editMessageText(text, {
-        chat_id: chatId,
-        message_id: messageId,
-        parse_mode: 'HTML',
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: '🔄 Обновить', callback_data: 'status_show' }],
-                [{ text: '📋 Главное меню', callback_data: 'main_menu' }]
-            ]
-        }
-    });
-}
-
-// ================= ОБРАБОТЧИК CALLBACK =================
-bot.on('callback_query', async (q) => {
-    const chatId = q.message.chat.id;
-    const userId = q.from.id.toString();
-    const dataCb = q.data;
-    await bot.answerCallbackQuery(q.id);
+    const { data, message } = query;
+    const chatId = message.chat.id;
+    const userId = query.from.id.toString();
 
     try {
-        if (dataCb === 'main_menu') {
-            return bot.sendMessage(chatId, 'Вы в меню', {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: '🛡️ Стать защитником', callback_data: 'join_start' }],
-                        [{ text: '🆘 Запросить помощь', callback_data: 'report_start' }],
-                        [{ text: '📊 Статус заявки', callback_data: 'status_show' }],
-                        [{ text: '📖 Справка', callback_data: 'show_help' }]
-                    ]
-                },
-                parse_mode: 'HTML'
-            });
+        if (data === 'SHOW_HELP') {
+            return showHelp(chatId, message.message_id);
         }
 
-        if (dataCb === 'show_help') {
-            return showHelp(chatId, q.message.message_id);
+        if (data === 'STATUS_SHOW') {
+            return showStatus(chatId, userId, message.message_id);
         }
 
-        if (dataCb === 'status_show') {
-            return showStatus(chatId, userId, q.message.message_id);
+        if (data === 'JOIN_START') {
+            return startJoin(chatId, userId, message.message_id);
         }
 
-        if (dataCb === 'join_start') {
-            data.sessions.set(userId, { type: 'join', step: 1, region: null, nickname: null });
-            return bot.editMessageText(
-                `🛡️ Регистрация защитника — Шаг 1/3\nВыберите регион:`,
-                {
-                    chat_id: chatId,
-                    message_id: q.message.message_id,
-                    parse_mode: 'HTML',
-                    reply_markup: {
-                        inline_keyboard: [
-                            [{ text: '🇷🇺 Россия', callback_data: 'region_ru' }],
-                            [{ text: '🇺🇦 Украина', callback_data: 'region_ua' }],
-                            [{ text: '🇰🇿 Казахстан', callback_data: 'region_kz' }],
-                            [{ text: '🌍 Другое', callback_data: 'region_other' }],
-                            [{ text: '📋 Вернуться в меню', callback_data: 'main_menu' }]
-                        ]
-                    }
-                }
-            );
+        if (data === 'REPORT_START') {
+            return startReport(chatId, userId, message.message_id);
         }
 
-        if (dataCb === 'report_start') {
-            data.sessions.set(userId, { type: 'report', step: 1 });
-            return bot.editMessageText(
-                `🆘 Создание заявки — Шаг 1/4\nВыберите регион инцидента:`,
-                {
-                    chat_id: chatId,
-                    message_id: q.message.message_id,
-                    parse_mode: 'HTML',
-                    reply_markup: {
-                        inline_keyboard: [
-                            [{ text: '🇷🇺 Россия', callback_data: 'region_ru' }],
-                            [{ text: '🇺🇦 Украина', callback_data: 'region_ua' }],
-                            [{ text: '🇰🇿 Казахстан', callback_data: 'region_kz' }],
-                            [{ text: '🌍 Другое', callback_data: 'region_other' }],
-                            [{ text: '📋 Вернуться в меню', callback_data: 'main_menu' }]
-                        ]
-                    }
-                }
-            );
+        if (data.startsWith('REG_')) {
+            return handleRegion(chatId, userId, message.message_id, data);
         }
 
-        if (dataCb.startsWith('region_')) {
-            const session = data.sessions.get(userId);
-            const regions = {
-                'region_ru': 'Россия',
-                'region_ua': 'Украина',
-                'region_kz': 'Казахстан',
-                'region_other': 'Другое'
-            };
-            if (!session) return;
-            session.region = regions[dataCb];
-            session.step++;
-
-            if (session.type === 'join') {
-                data.states.set(userId, 'wait_nickname');
-                await bot.sendMessage(chatId,
-                    `👤 Введите ваш псевдоним для защитника:`);
-            } else {
-                await bot.editMessageText(
-                    `🆘 Выбран регион: ${session.region}\n` +
-                    `Шаг 2/4 — выберите тип проблемы:`,
-                    {
-                        chat_id: chatId,
-                        message_id: q.message.message_id,
-                        reply_markup: {
-                            inline_keyboard: [
-                                [{ text: '💰 Вымогательство', callback_data: 'crime_extortion' }],
-                                [{ text: '😔 Кибербуллинг', callback_data: 'crime_bullying' }],
-                                [{ text: '🎭 Мошенничество', callback_data: 'crime_fraud' }],
-                                [{ text: '🌀 Другое', callback_data: 'crime_other' }],
-                                [{ text: '📋 Меню', callback_data: 'main_menu' }]
-                            ]
-                        }
-                    }
-                );
-            }
-            return;
+        if (data.startsWith('CRIME_')) {
+            return handleCrime(chatId, userId, message.message_id, data);
         }
 
-        if (dataCb.startsWith('crime_')) {
-            const session = data.sessions.get(userId);
-            if (!session) return;
-            session.crimeType = dataCb.replace('crime_', '');
-            session.step++;
-            data.states.set(userId, 'wait_description');
-
-            await bot.sendMessage(chatId,
-                `📝 Опишите ситуацию подробно:`);
-            return;
-        }
-
-        if (dataCb === 'confirm_yes') {
-            const session = data.sessions.get(userId);
-            if (!session) return;
-
-            // Защитник
-            if (session.type === 'join') {
-                const defenderId = `${userId}-${Date.now()}`;
-                data.defenders.set(defenderId, {
-                    id: defenderId,
-                    userId,
-                    nickname: session.nickname,
-                    region: session.region
-                });
-
-                await bot.editMessageText(
-                    `🎉 Регистрация успешна!\nВы зарегистрированы как защитник в регионе ${session.region}`,
-                    { chat_id: chatId, message_id: q.message.message_id }
-                );
-
-                clearSession(userId);
-                return;
-            }
-
-            // Заявка
-            if (session.type === 'report') {
-                const rId = genReportId();
-                data.reports.set(rId, {
-                    id: rId,
-                    userId,
-                    region: session.region,
-                    crimeType: session.crimeType,
-                    description: session.description,
-                    status: 'pending'
-                });
-
-                await bot.editMessageText(
-                    `✅ Заявка отправлена! ID: ${rId}`,
-                    { chat_id: chatId, message_id: q.message.message_id }
-                );
-
-                clearSession(userId);
-                return;
-            }
+        if (data === 'CONFIRM_YES' || data === 'CONFIRM_NO') {
+            return handleConfirmation(chatId, userId, message.message_id, data);
         }
 
     } catch (err) {
@@ -324,65 +153,230 @@ bot.on('callback_query', async (q) => {
     }
 });
 
-// ================= ОБРАБОТКА TEXT =================
+// ================== HELP ==================
+
+async function showHelp(chatId, messageId) {
+    const text = `
+📖 <b>Справка</b>
+
+🛡️ Стать защитником — регистрация.
+🆘 Запросить помощь — создать заявку.
+📊 Статус заявки — посмотреть прогресс.
+📖 Справка — это окно.
+
+Используйте кнопки для навигации.
+    `;
+    await bot.editMessageText(text, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'HTML',
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '📋 Главное меню', callback_data: 'MAIN_MENU' }]
+            ]
+        }
+    });
+}
+
+// ================== START JOIN ==================
+
+async function startJoin(chatId, userId, messageId) {
+    dataStore.sessions.set(userId, { type: 'join', step: 1, data: {} });
+
+    await bot.editMessageText(
+        `🛡️ Регистрация защитника — Выберите регион:`,
+        {
+            chat_id,
+            message_id,
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🇷🇺 Россия', callback_data: 'REG_ru' }],
+                    [{ text: '🇺🇦 Украина', callback_data: 'REG_ua' }],
+                    [{ text: '🇰🇿 Казахстан', callback_data: 'REG_kz' }],
+                    [{ text: '🌍 Другое', callback_data: 'REG_other' }],
+                    [{ text: '📋 Главное меню', callback_data: 'MAIN_MENU' }]
+                ]
+            }
+        }
+    );
+}
+
+// ================== START REPORT ==================
+
+async function startReport(chatId, userId, messageId) {
+    dataStore.sessions.set(userId, { type: 'report', step: 1, data: {} });
+
+    await bot.editMessageText(
+        `🆘 Создание заявки — Выберите регион:`,
+        {
+            chat_id,
+            message_id,
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🇷🇺 Россия', callback_data: 'REG_ru' }],
+                    [{ text: '🇺🇦 Украина', callback_data: 'REG_ua' }],
+                    [{ text: '🇰🇿 Казахстан', callback_data: 'REG_kz' }],
+                    [{ text: '🌍 Другое', callback_data: 'REG_other' }],
+                    [{ text: '📋 Главное меню', callback_data: 'MAIN_MENU' }]
+                ]
+            }
+        }
+    );
+}
+
+// ================== HANDLE REGION ==================
+
+async function handleRegion(chatId, userId, messageId, data) {
+    const session = dataStore.sessions.get(userId);
+
+    if (!session) return;
+
+    const regions = {
+        REG_ru: 'Россия',
+        REG_ua: 'Украина',
+        REG_kz: 'Казахстан',
+        REG_other: 'Другое'
+    };
+
+    session.data.region = regions[data];
+    session.step++;
+
+    if (session.type === 'join') {
+        dataStore.states.set(userId, 'wait_nickname');
+        await bot.sendMessage(chatId, `Введите ваш псевдоним:`);
+    } else {
+        await bot.editMessageText(
+            `🆘 Выбран регион: ${session.data.region}\nВыберите тип проблемы:`,
+            {
+                chat_id,
+                message_id,
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: '💰 Вымогательство', callback_data: 'CRIME_extortion' }],
+                        [{ text: '😔 Кибербуллинг', callback_data: 'CRIME_bullying' }],
+                        [{ text: '🎭 Мошенничество', callback_data: 'CRIME_fraud' }],
+                        [{ text: '🌀 Другое', callback_data: 'CRIME_other' }],
+                        [{ text: '📋 Главное меню', callback_data: 'MAIN_MENU' }]
+                    ]
+                }
+            }
+        );
+    }
+}
+
+// ================== HANDLE CRIME ==================
+
+async function handleCrime(chatId, userId, messageId, data) {
+    const session = dataStore.sessions.get(userId);
+    if (!session) return;
+
+    session.data.crimeType = data.replace('CRIME_', '');
+    session.step++;
+    dataStore.states.set(userId, 'wait_description');
+
+    await bot.sendMessage(chatId, `Опишите ситуацию подробно:`);
+}
+
+// ================== HANDLE CONFIRMATION ==================
+
+async function handleConfirmation(chatId, userId, messageId, data) {
+    const session = dataStore.sessions.get(userId);
+    if (!session) return;
+
+    if (data === 'CONFIRM_YES') {
+        if (session.type === 'join') {
+            const defenderId = `${userId}-${Date.now()}`;
+            dataStore.defenders.set(defenderId, {
+                userId,
+                region: session.data.region
+            });
+
+            await bot.editMessageText(
+                `🛡️ Регистрация завершена!`,
+                { chat_id: chatId, message_id }
+            );
+
+        } else {
+            const rId = createReportId();
+            dataStore.reports.set(rId, {
+                id: rId,
+                userId,
+                region: session.data.region,
+                crimeType: session.data.crimeType,
+                description: session.data.description,
+                status: 'pending'
+            });
+
+            await bot.editMessageText(
+                `✅ Заявка создана! ID: ${rId}`,
+                { chat_id, message_id }
+            );
+        }
+    } else {
+        await bot.editMessageText(
+            `❌ Действие отменено.`,
+            { chat_id, message_id }
+        );
+    }
+
+    clearUserSession(userId);
+}
+
+// ================== MESSAGE TEXT HANDLER ==================
+
 bot.on('message', async (msg) => {
-    if (msg.text?.startsWith('/')) return;
+    if (!msg.text || msg.text.startsWith('/')) return;
+
     const userId = msg.from.id.toString();
-    const state = data.states.get(userId);
+    const state = dataStore.states.get(userId);
+    const session = dataStore.sessions.get(userId);
+
+    if (!session) return;
 
     if (state === 'wait_nickname') {
-        const session = data.sessions.get(userId);
-        session.nickname = msg.text.trim();
-        data.states.set(userId, null);
+        session.data.nickname = msg.text.trim();
+        dataStore.states.delete(userId);
 
         await bot.sendMessage(msg.chat.id,
-            `Псевдоним сохранён: ${session.nickname}\n` +
-            `Введите специализацию:`
-        );
-
-        data.states.set(userId, 'wait_specialty');
-        return;
+            `Ник сохранён: ${session.data.nickname}\nВведите специализацию:`);
+        dataStore.states.set(userId, 'wait_specialty');
     }
-
-    if (state === 'wait_specialty') {
-        const session = data.sessions.get(userId);
-        session.specialty = msg.text.trim();
-        data.states.set(userId, null);
+    else if (state === 'wait_specialty') {
+        session.data.specialty = msg.text.trim();
+        dataStore.states.delete(userId);
 
         await bot.sendMessage(msg.chat.id,
-            `Специализация: ${session.specialty}\n` +
-            `Нажмите Подтвердить:`,
+            `Специализация: ${session.data.specialty}`,
             {
                 reply_markup: {
                     inline_keyboard: [
-                        [{ text: '✅ Подтвердить', callback_data: 'confirm_yes' }],
-                        [{ text: '❌ Отменить', callback_data: 'main_menu' }]
+                        [{ text: '✅ Подтвердить', callback_data: 'CONFIRM_YES' }],
+                        [{ text: '❌ Отменить', callback_data: 'CONFIRM_NO' }],
+                        [{ text: '📋 Главное меню', callback_data: 'MAIN_MENU' }]
                     ]
                 }
             }
         );
-        return;
     }
-
-    if (state === 'wait_description') {
-        const session = data.sessions.get(userId);
-        session.description = msg.text.trim();
-        data.states.set(userId, null);
+    else if (state === 'wait_description') {
+        session.data.description = msg.text.trim();
+        dataStore.states.delete(userId);
 
         await bot.sendMessage(msg.chat.id,
-            `Описание сохранено. Нажмите Отправить:`,
+            `Описание принято.`,
             {
                 reply_markup: {
                     inline_keyboard: [
-                        [{ text: '✅ Отправить заявку', callback_data: 'confirm_yes' }],
-                        [{ text: '❌ Отменить', callback_data: 'main_menu' }]
+                        [{ text: '✅ Отправить', callback_data: 'CONFIRM_YES' }],
+                        [{ text: '❌ Отменить', callback_data: 'CONFIRM_NO' }],
+                        [{ text: '📋 Главное меню', callback_data: 'MAIN_MENU' }]
                     ]
                 }
             }
         );
-        return;
     }
 });
 
-console.log('🛡️ Bakelite Bot запущен');
-
+console.log('✨ Bakelite Bot запущен и готов к работе');
