@@ -1,83 +1,48 @@
-// ============================================
-// 🛡️ BAKELITE BOT — Полный рабочий код
-// ============================================
-
+// ===================================
+//     🛡️ BAKELITE BOT v3.3
+// ===================================
 const TelegramBot = require('node-telegram-bot-api');
-const express = require('express');
 
-console.log('🚀 Запуск Bakelite Bot...');
-
-// ================== КОНФИГУРАЦИЯ ==================
-
+// ================== CONFIG =====================
 const CONFIG = {
-    BOT_TOKEN: process.env.BOT_TOKEN || '',
-    ADMIN_ID: parseInt(process.env.ADMIN_ID) || null,
-    VERSION: '3.2.0',
-    NODE_ENV: process.env.NODE_ENV || 'development',
-    PORT: process.env.PORT || 3000
+    TOKEN: process.env.BOT_TOKEN || '',
+    ADMIN: process.env.ADMIN_ID || null,
+    VERSION: '3.3.0'
 };
 
-if (!CONFIG.BOT_TOKEN) {
-    console.error('❌ BOT_TOKEN отсутствует!');
+if (!CONFIG.TOKEN) {
+    console.error('❌ Ошибка: BOT_TOKEN не найден!');
     process.exit(1);
 }
 
-// ================== ХРАНЕНИЕ ДАННЫХ ==================
-
+// ================== DATA STORAGE =====================
 const dataStore = {
-    defenders: new Map(),
-    reports: new Map(),
-    sessions: new Map(),
-    states: new Map(),
+    defenders: new Map(),        // Защитники
+    reports: new Map(),          // Заявки
+    sessions: new Map(),         // Сессии ввода пользователя
+    states: new Map()            // Ожидаемые состояния
 };
 
-let reportCount = 0;
+let reportCounter = 0;
 
-// ================== ИНИЦИАЛИЗАЦИЯ БОТА ==================
+// ================== INITIALIZE BOT =====================
 
-const bot = new TelegramBot(CONFIG.BOT_TOKEN, {
-    polling: CONFIG.NODE_ENV !== 'production'
+// Важно: указываем allowed_updates для callback_query
+const bot = new TelegramBot(CONFIG.TOKEN, {
+    polling: {
+        params: {
+            allowed_updates: ['message', 'callback_query']
+        }
+    }
 });
 
-if (CONFIG.NODE_ENV === 'production') {
-    const app = express();
-    app.use(express.json());
-
-    app.post(`/bot${CONFIG.BOT_TOKEN}`, (req, res) => {
-        bot.processUpdate(req.body);
-        res.sendStatus(200);
-    });
-
-    app.listen(CONFIG.PORT, () => {
-        console.log(`🌐 Сервер запущен на порту ${CONFIG.PORT}`);
-    });
-
-    const webhookURL = process.env.RAILWAY_PUBLIC_DOMAIN ?
-        `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/bot${CONFIG.BOT_TOKEN}` :
-        process.env.WEBHOOK_URL;
-
-    if (webhookURL) {
-        bot.setWebHook(webhookURL).catch(console.error);
-    }
+// ================== UTILS =====================
+function genReportId() {
+    reportCounter++;
+    return `RPT-${Date.now()}-${reportCounter}`;
 }
 
-bot.on('polling_error', console.error);
-bot.on('webhook_error', console.error);
-
-console.log('🤖 Бот инициализирован');
-
-// ================== УТИЛИТЫ ==================
-
-function createReportId() {
-    return `R-${Date.now()}-${++reportCount}`;
-}
-
-function clearUserSession(userId) {
-    dataStore.sessions.delete(userId.toString());
-    dataStore.states.delete(userId.toString());
-}
-
-function getStatusIcon(status) {
+function getStatusEmoji(status) {
     const icons = {
         pending: '🟡',
         in_progress: '🟠',
@@ -87,84 +52,104 @@ function getStatusIcon(status) {
     return icons[status] || '⚪';
 }
 
-// ================== /start ==================
+function clearUserSession(userId) {
+    dataStore.sessions.delete(userId.toString());
+    dataStore.states.delete(userId.toString());
+}
+
+// ================== START MENU =====================
 
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
 
+    // Очищаем старое состояние
     clearUserSession(msg.from.id);
 
-    await bot.sendMessage(chatId,
-        `🛡️ <b>Bakelite Bot v${CONFIG.VERSION}</b>\nВыберите действие:`,
-        {
-            parse_mode: 'HTML',
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: '🛡️ Стать защитником', callback_data: 'JOIN_START' }],
-                    [{ text: '🆘 Запросить помощь', callback_data: 'REPORT_START' }],
-                    [{ text: '📊 Статус заявки', callback_data: 'STATUS_SHOW' }],
-                    [{ text: '📖 Справка', callback_data: 'SHOW_HELP' }]
-                ]
-            }
+    const welcomeMessage = `
+🛡️ <b>Добро пожаловать в Bakelite Bot v${CONFIG.VERSION}!</b>
+
+Я — твой помощник в ситуации, когда нужна помощь по вопросам киберпреступности.
+Здесь ты можешь:
+
+🛡️ Стать защитником — помогать другим
+🆘 Запросить помощь — оставить заявку о проблеме
+📊 Узнать статус своей заявки
+📖 Получить подсказку по функциям
+
+Пожалуйста, выбери действие ниже 👇
+    `;
+
+    await bot.sendMessage(chatId, welcomeMessage, {
+        parse_mode: 'HTML',
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '🛡️ Стать защитником', callback_data: 'MENU_JOIN' }],
+                [{ text: '🆘 Запросить помощь', callback_data: 'MENU_REPORT' }],
+                [{ text: '📊 Статус моей заявки', callback_data: 'MENU_STATUS' }],
+                [{ text: '📖 Справка', callback_data: 'MENU_HELP' }]
+            ]
         }
-    );
+    });
 });
 
-// ================== CALLBACK_QUERY ==================
+// ================== CALLBACK HANDLER =====================
 
-bot.on('callback_query', async (query) => {
-    await bot.answerCallbackQuery(query.id);
-
-    const { data, message } = query;
+bot.on('callback_query', async (callbackQuery) => {
+    const { data, message } = callbackQuery;
     const chatId = message.chat.id;
-    const userId = query.from.id.toString();
+    const userId = callbackQuery.from.id.toString();
+
+    // Обязательно отвечаем на callback чтобы убрать "часики"
+    await bot.answerCallbackQuery(callbackQuery.id);
 
     try {
-        if (data === 'SHOW_HELP') {
+        if (data === 'MENU_JOIN') {
+            return showJoinRegionMenu(chatId, userId, message.message_id);
+        }
+        if (data === 'MENU_REPORT') {
+            return showReportRegionMenu(chatId, userId, message.message_id);
+        }
+        if (data === 'MENU_STATUS') {
+            return showStatus(chatId, userId, message.message_id);
+        }
+        if (data === 'MENU_HELP') {
             return showHelp(chatId, message.message_id);
         }
 
-        if (data === 'STATUS_SHOW') {
-            return showStatus(chatId, userId, message.message_id);
-        }
-
-        if (data === 'JOIN_START') {
-            return startJoin(chatId, userId, message.message_id);
-        }
-
-        if (data === 'REPORT_START') {
-            return startReport(chatId, userId, message.message_id);
-        }
-
+        // Обработка выбора региона
         if (data.startsWith('REG_')) {
-            return handleRegion(chatId, userId, message.message_id, data);
+            return handleRegionSelection(chatId, userId, message.message_id, data);
         }
 
+        // Обработка типа преступления
         if (data.startsWith('CRIME_')) {
-            return handleCrime(chatId, userId, message.message_id, data);
+            return handleCrimeType(chatId, userId, message.message_id, data);
         }
 
+        // Подтверждение отправки
         if (data === 'CONFIRM_YES' || data === 'CONFIRM_NO') {
             return handleConfirmation(chatId, userId, message.message_id, data);
         }
 
-    } catch (err) {
-        console.error('Callback error:', err);
+    } catch (error) {
+        console.error('Ошибка обработки callback:', error);
+        bot.sendMessage(chatId, '⚠️ Произошла ошибка. Используйте /start для начала.');
     }
 });
 
-// ================== HELP ==================
+// ================== INLINE MENUS =====================
 
+// Справка
 async function showHelp(chatId, messageId) {
     const text = `
-📖 <b>Справка</b>
+📖 <b>Справка по функциям</b>
 
-🛡️ Стать защитником — регистрация.
-🆘 Запросить помощь — создать заявку.
-📊 Статус заявки — посмотреть прогресс.
-📖 Справка — это окно.
+• 🛡️ <b>Стать защитником</b> — зарегистрироваться для помощи другим
+• 🆘 <b>Запросить помощь</b> — создать заявку
+• 📊 <b>Статус заявки</b> — просмотреть свои заявки и их статусы
+• 📖 <b>Справка</b> — это окно
 
-Используйте кнопки для навигации.
+Нажми кнопку ниже, чтобы вернуться в меню.
     `;
     await bot.editMessageText(text, {
         chat_id: chatId,
@@ -172,22 +157,35 @@ async function showHelp(chatId, messageId) {
         parse_mode: 'HTML',
         reply_markup: {
             inline_keyboard: [
-                [{ text: '📋 Главное меню', callback_data: 'MAIN_MENU' }]
+                [{ text: '📋 Главное меню', callback_data: 'MENU_START' }]
             ]
         }
     });
 }
 
-// ================== START JOIN ==================
+// Главное меню
+bot.onText(/\/menu/, async (msg) => {
+    await bot.sendMessage(msg.chat.id, '📋 Главное меню:', {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '🛡️ Стать защитником', callback_data: 'MENU_JOIN' }],
+                [{ text: '🆘 Запросить помощь', callback_data: 'MENU_REPORT' }],
+                [{ text: '📊 Статус моей заявки', callback_data: 'MENU_STATUS' }],
+                [{ text: '📖 Справка', callback_data: 'MENU_HELP' }]
+            ]
+        }
+    });
+});
 
-async function startJoin(chatId, userId, messageId) {
+// Меню выбора региона для регистрации
+async function showJoinRegionMenu(chatId, userId, messageId) {
     dataStore.sessions.set(userId, { type: 'join', step: 1, data: {} });
 
     await bot.editMessageText(
-        `🛡️ Регистрация защитника — Выберите регион:`,
+        `🛡️ <b>Стать защитником</b>\n\nВыберите ваш регион:`,
         {
-            chat_id,
-            message_id,
+            chat_id: chatId,
+            message_id: messageId,
             parse_mode: 'HTML',
             reply_markup: {
                 inline_keyboard: [
@@ -195,23 +193,22 @@ async function startJoin(chatId, userId, messageId) {
                     [{ text: '🇺🇦 Украина', callback_data: 'REG_ua' }],
                     [{ text: '🇰🇿 Казахстан', callback_data: 'REG_kz' }],
                     [{ text: '🌍 Другое', callback_data: 'REG_other' }],
-                    [{ text: '📋 Главное меню', callback_data: 'MAIN_MENU' }]
+                    [{ text: '📋 Главное меню', callback_data: 'MENU_START' }]
                 ]
             }
         }
     );
 }
 
-// ================== START REPORT ==================
-
-async function startReport(chatId, userId, messageId) {
+// Меню выбора региона для заявки
+async function showReportRegionMenu(chatId, userId, messageId) {
     dataStore.sessions.set(userId, { type: 'report', step: 1, data: {} });
 
     await bot.editMessageText(
-        `🆘 Создание заявки — Выберите регион:`,
+        `🆘 <b>Запросить помощь</b>\n\nВыберите регион инцидента:`,
         {
-            chat_id,
-            message_id,
+            chat_id: chatId,
+            message_id: messageId,
             parse_mode: 'HTML',
             reply_markup: {
                 inline_keyboard: [
@@ -219,18 +216,46 @@ async function startReport(chatId, userId, messageId) {
                     [{ text: '🇺🇦 Украина', callback_data: 'REG_ua' }],
                     [{ text: '🇰🇿 Казахстан', callback_data: 'REG_kz' }],
                     [{ text: '🌍 Другое', callback_data: 'REG_other' }],
-                    [{ text: '📋 Главное меню', callback_data: 'MAIN_MENU' }]
+                    [{ text: '📋 Главное меню', callback_data: 'MENU_START' }]
                 ]
             }
         }
     );
 }
 
-// ================== HANDLE REGION ==================
+// Показывает статус заявок
+async function showStatus(chatId, userId, messageId) {
+    const userReports = Array.from(dataStore.reports.values())
+        .filter(r => r.userId === userId);
 
-async function handleRegion(chatId, userId, messageId, data) {
+    let text = `<b>📊 Статус ваших заявок</b>\n\n`;
+
+    if (userReports.length === 0) {
+        text += `У вас пока нет заявок.\n\n`;
+    } else {
+        userReports.forEach(r => {
+            text += `${getStatusEmoji(r.status)} <b>ID:</b> ${r.id} — <b>${r.status}</b>\n`;
+        });
+    }
+
+    await bot.editMessageText(text, {
+        chat_id: chatId,
+        message_id,
+        parse_mode: 'HTML',
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '🔄 Обновить', callback_data: 'MENU_STATUS' }],
+                [{ text: '📋 Главное меню', callback_data: 'MENU_START' }]
+            ]
+        }
+    });
+}
+
+// ================== HANDLERS =====================
+
+// Обработка выбора региона
+async function handleRegionSelection(chatId, userId, messageId, regionData) {
     const session = dataStore.sessions.get(userId);
-
     if (!session) return;
 
     const regions = {
@@ -240,66 +265,82 @@ async function handleRegion(chatId, userId, messageId, data) {
         REG_other: 'Другое'
     };
 
-    session.data.region = regions[data];
+    session.data.region = regions[regionData];
     session.step++;
 
+    // Обработка для регистрации защитника
     if (session.type === 'join') {
-        dataStore.states.set(userId, 'wait_nickname');
-        await bot.sendMessage(chatId, `Введите ваш псевдоним:`);
-    } else {
-        await bot.editMessageText(
-            `🆘 Выбран регион: ${session.data.region}\nВыберите тип проблемы:`,
-            {
-                chat_id,
-                message_id,
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: '💰 Вымогательство', callback_data: 'CRIME_extortion' }],
-                        [{ text: '😔 Кибербуллинг', callback_data: 'CRIME_bullying' }],
-                        [{ text: '🎭 Мошенничество', callback_data: 'CRIME_fraud' }],
-                        [{ text: '🌀 Другое', callback_data: 'CRIME_other' }],
-                        [{ text: '📋 Главное меню', callback_data: 'MAIN_MENU' }]
-                    ]
-                }
-            }
+        dataStore.states.set(userId, 'await_nickname');
+
+        await bot.sendMessage(chatId,
+            `📍 <b>Регион:</b> ${session.data.region}\nВведите ваш псевдоним:`
         );
+        return;
     }
+
+    // Обработка для заявки
+    await bot.editMessageText(
+        `📍 <b>Регион выбран:</b> ${session.data.region}\n\n` +
+        `🆘 <b>Выберите тип проблемы:</b>`,
+        {
+            chat_id,
+            message_id,
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '💰 Вымогательство', callback_data: 'CRIME_extortion' }],
+                    [{ text: '😔 Кибербуллинг', callback_data: 'CRIME_bullying' }],
+                    [{ text: '🎭 Мошенничество', callback_data: 'CRIME_fraud' }],
+                    [{ text: '🌀 Другое', callback_data: 'CRIME_other' }],
+                    [{ text: '📋 Главное меню', callback_data: 'MENU_START' }]
+                ]
+            }
+        }
+    );
 }
 
-// ================== HANDLE CRIME ==================
-
-async function handleCrime(chatId, userId, messageId, data) {
+// Обработка выбора типа преступления
+async function handleCrimeType(chatId, userId, messageId, crimeData) {
     const session = dataStore.sessions.get(userId);
     if (!session) return;
 
-    session.data.crimeType = data.replace('CRIME_', '');
+    const types = {
+        CRIME_extortion: 'Вымогательство',
+        CRIME_bullying: 'Кибербуллинг',
+        CRIME_fraud: 'Мошенничество',
+        CRIME_other: 'Другое'
+    };
+
+    session.data.crimeType = types[crimeData] || 'Не указано';
     session.step++;
-    dataStore.states.set(userId, 'wait_description');
+    dataStore.states.set(userId, 'await_description');
 
-    await bot.sendMessage(chatId, `Опишите ситуацию подробно:`);
+    await bot.sendMessage(chatId, `📝 Опишите ситуацию подробно:`);
 }
 
-// ================== HANDLE CONFIRMATION ==================
-
-async function handleConfirmation(chatId, userId, messageId, data) {
+// Обработка подтверждения отправки
+async function handleConfirmation(chatId, userId, messageId, confirmData) {
     const session = dataStore.sessions.get(userId);
     if (!session) return;
 
-    if (data === 'CONFIRM_YES') {
+    if (confirmData === 'CONFIRM_YES') {
+        // Защитник
         if (session.type === 'join') {
             const defenderId = `${userId}-${Date.now()}`;
             dataStore.defenders.set(defenderId, {
                 userId,
+                nickname: session.data.nickname,
                 region: session.data.region
             });
 
             await bot.editMessageText(
-                `🛡️ Регистрация завершена!`,
+                `✅ Регистрация защитника успешна!`,
                 { chat_id: chatId, message_id }
             );
-
-        } else {
-            const rId = createReportId();
+        }
+        // Заявка
+        else if (session.type === 'report') {
+            const rId = genReportId();
             dataStore.reports.set(rId, {
                 id: rId,
                 userId,
@@ -310,68 +351,78 @@ async function handleConfirmation(chatId, userId, messageId, data) {
             });
 
             await bot.editMessageText(
-                `✅ Заявка создана! ID: ${rId}`,
-                { chat_id, message_id }
+                `✅ Заявка отправлена!\nID: ${rId}`,
+                { chat_id: chatId, message_id }
             );
         }
     } else {
         await bot.editMessageText(
-            `❌ Действие отменено.`,
-            { chat_id, message_id }
+            `❌ Отмена действия`,
+            { chat_id: chatId, message_id }
         );
     }
 
+    // Очистка
     clearUserSession(userId);
 }
 
-// ================== MESSAGE TEXT HANDLER ==================
+// ================== MESSAGE HANDLER =====================
 
 bot.on('message', async (msg) => {
     if (!msg.text || msg.text.startsWith('/')) return;
 
     const userId = msg.from.id.toString();
-    const state = dataStore.states.get(userId);
+    const currentState = dataStore.states.get(userId);
     const session = dataStore.sessions.get(userId);
 
     if (!session) return;
 
-    if (state === 'wait_nickname') {
+    // Ввод псевдонима
+    if (currentState === 'await_nickname') {
         session.data.nickname = msg.text.trim();
-        dataStore.states.delete(userId);
+        dataStore.states.set(userId, 'await_specialty');
 
-        await bot.sendMessage(msg.chat.id,
-            `Ник сохранён: ${session.data.nickname}\nВведите специализацию:`);
-        dataStore.states.set(userId, 'wait_specialty');
+        return bot.sendMessage(msg.chat.id,
+            `👤 Псевдоним сохранён: <b>${session.data.nickname}</b>\n` +
+            `Опишите вашу специализацию:`,
+            { parse_mode: 'HTML' }
+        );
     }
-    else if (state === 'wait_specialty') {
+
+    // Ввод описания специализации
+    if (currentState === 'await_specialty') {
         session.data.specialty = msg.text.trim();
         dataStore.states.delete(userId);
 
-        await bot.sendMessage(msg.chat.id,
-            `Специализация: ${session.data.specialty}`,
+        return bot.sendMessage(msg.chat.id,
+            `📋 Специализация: <b>${session.data.specialty}</b>\n` +
+            `Подтвердите регистрацию:`,
             {
+                parse_mode: 'HTML',
                 reply_markup: {
                     inline_keyboard: [
                         [{ text: '✅ Подтвердить', callback_data: 'CONFIRM_YES' }],
                         [{ text: '❌ Отменить', callback_data: 'CONFIRM_NO' }],
-                        [{ text: '📋 Главное меню', callback_data: 'MAIN_MENU' }]
+                        [{ text: '📋 Главное меню', callback_data: 'MENU_START' }]
                     ]
                 }
             }
         );
     }
-    else if (state === 'wait_description') {
+
+    // Ввод описания проблемы
+    if (currentState === 'await_description') {
         session.data.description = msg.text.trim();
         dataStore.states.delete(userId);
 
-        await bot.sendMessage(msg.chat.id,
-            `Описание принято.`,
+        return bot.sendMessage(msg.chat.id,
+            `📄 Описание получено.\nНажмите кнопку ниже для отправки:`,
             {
                 reply_markup: {
                     inline_keyboard: [
-                        [{ text: '✅ Отправить', callback_data: 'CONFIRM_YES' }],
+                        [{ text: '✅ Отправить заявку', callback_data: 'CONFIRM_YES' }],
                         [{ text: '❌ Отменить', callback_data: 'CONFIRM_NO' }],
-                        [{ text: '📋 Главное меню', callback_data: 'MAIN_MENU' }]
+                        [{ text: '📋 Главное меню', callback_data: 'MENU_START' }]
                     ]
                 }
             }
@@ -379,4 +430,4 @@ bot.on('message', async (msg) => {
     }
 });
 
-console.log('✨ Bakelite Bot запущен и готов к работе');
+console.log('📌 Bot запущен и готов к работе!');
