@@ -1,3 +1,10 @@
+const http = require('http');
+http.createServer((req, res) => res.end('Bot is alive!')).listen(process.env.PORT || 3000);
+
+const { Telegraf } = require('telegraf');
+const bot = new Telegraf(process.env.BOT_TOKEN);
+
+// Твой основной код бота дальше...
 const { Telegraf, Scenes, session, Markup } = require('telegraf');
 
 /**
