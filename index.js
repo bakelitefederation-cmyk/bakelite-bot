@@ -1,10 +1,8 @@
 const http = require('http');
+// Простой сервер для поддержания работы на хостинге
 http.createServer((req, res) => res.end('Bot is alive!')).listen(process.env.PORT || 3000);
 
-const { Telegraf } = require('telegraf');
-const bot = new Telegraf(process.env.BOT_TOKEN);
-
-// Твой основной код бота дальше...
+// Объединяем все нужные модули Telegraf в один импорт
 const { Telegraf, Scenes, session, Markup } = require('telegraf');
 
 /**
@@ -14,10 +12,18 @@ const { Telegraf, Scenes, session, Markup } = require('telegraf');
  * 3. Tone: Friendly, empathetic, supportive AI assistant.
  */
 
+// Инициализируем бота один раз
 const bot = new Telegraf(process.env.BOT_TOKEN);
-const OWNER_ID = Number(process.env.ADMIN_CHAT_ID); 
+
+// Константы окружения
+const OWNER_ID = Number(process.env.ADMIN_CHAT_ID);
 const VERSION = "5.2.0-HUMANE";
 const HOSTING = "Railway.app";
+
+// ОБЯЗАТЕЛЬНО: Подключаем сессии, так как ты используешь Scenes
+bot.use(session());
+
+// Твой дальнейший код (сцены, команды и т.д.)
 
 // Расширенная память для админ-панели
 const state = {
