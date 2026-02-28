@@ -167,3 +167,17 @@ bot.action(/^w_take_(\d+)$/, async (ctx) => {
 
 http.createServer((req, res) => { res.writeHead(200); res.end('Federation Online'); }).listen(process.env.PORT || 3000);
 bot.launch();
+
+// Остановка бота при обновлении на Render
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
+// Запуск сервера и бота
+http.createServer((req, res) => { 
+    res.writeHead(200); 
+    res.end('Federation Online'); 
+}).listen(process.env.PORT || 3000);
+
+bot.launch().then(() => {
+    console.log('🚀 Бот запущен и готов к работе');
+});
