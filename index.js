@@ -168,16 +168,30 @@ bot.action(/^w_take_(\d+)$/, async (ctx) => {
 http.createServer((req, res) => { res.writeHead(200); res.end('Federation Online'); }).listen(process.env.PORT || 3000);
 bot.launch();
 
-// Остановка бота при обновлении на Render
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+const PORT = process.env.PORT || 3000;
 
-// Запуск сервера и бота
-http.createServer((req, res) => { 
-    res.writeHead(200); 
-    res.end('Federation Online'); 
-}).listen(process.env.PORT || 3000);
+// Создаем сервер
+const server = http.createServer((req, res) => {
+    res.writeHead(200);
+    res.end('Federation Online');
+});
 
-bot.launch().then(() => {
-    console.log('🚀 Бот запущен и готов к работе');
+// Запускаем сервер с обработкой ошибок
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`📡 Server is running on port ${PORT}`);
+    
+    // Запускаем бота ТОЛЬКО после того, как сервер успешно поднялся
+    bot.launch()
+        .then(() => console.log('🚀 Federation Bot started successfully'))
+        .catch((err) => console.error('❌ Bot launch error:', err));
+});
+
+// Правильное завершение (чтобы не было EADDRINUSE при перезагрузке)
+process.once('SIGINT', () => {
+    bot.stop('SIGINT');
+    server.close();
+});
+process.once('SIGTERM', () => {
+    bot.stop('SIGTERM');
+    server.close();
 });
